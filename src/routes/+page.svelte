@@ -35,6 +35,22 @@
 		});
 		goto(resolve(`/invoice/${id}`));
 	}
+
+	async function deleteInvoice(id: number | undefined) {
+		if (id === undefined) return;
+		
+		const confirmed = confirm('Are you sure you want to delete this invoice? All associated photos will also be deleted.');
+		if (!confirmed) return;
+
+		// Use a transaction to ensure both the invoice and its photos are deleted safely
+		await db.transaction('rw', db.invoices, db.photos, async () => {
+			await db.photos.where('invoiceId').equals(id).delete();
+			await db.invoices.delete(id);
+		});
+
+		// Remove the deleted invoice from the local Svelte state to update the UI
+		invoices = invoices.filter((invoice) => invoice.id !== id);
+	}
 </script>
 
 <header>
@@ -60,6 +76,7 @@
 				<div class="actions">
 					<button onclick={() => goto(resolve(`/invoice/${invoice.id}`))}>Open</button>
 					<button class="reuse" onclick={() => reuseInvoice(invoice)}>Reuse for Next Cycle</button>
+					<button class="delete" onclick={() => deleteInvoice(invoice.id)}>Delete</button>
 				</div>
 			</div>
 		{/each}
@@ -89,8 +106,17 @@
 		display: flex;
 		gap: 0.5rem;
 		margin-top: 1rem;
+		flex-wrap: wrap;
 	}
 	.reuse {
 		background-color: #3b82f6;
+		color: white;
+	}
+	.delete {
+		background-color: #ef4444;
+		color: white;
+	}
+	.delete:hover {
+		background-color: #dc2626;
 	}
 </style>
