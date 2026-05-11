@@ -9,7 +9,6 @@
 
 	let { data }: { data: PageData } = $props();
 
-	// Note: You may need to ensure your 'Invoice' type in $lib/db.ts supports these new fields
 	let invoice = $state<
 		| (Invoice & {
 				contractorName?: string;
@@ -18,6 +17,7 @@
 				customerAddress?: string;
 				invoiceDate?: string;
 				invoiceNumber?: string;
+				angles?: string[];
 		  })
 		| undefined
 	>(undefined);
@@ -42,6 +42,9 @@
 
 	onMount(async () => {
 		invoice = await db.invoices.get(data.id);
+		if (invoice && !invoice.angles) {
+			invoice.angles = ['Front', 'Back', 'Left Side', 'Right Side'];
+		}
 		photos = await db.photos.where('invoiceId').equals(data.id).toArray();
 		isLoaded = true;
 	});
@@ -79,16 +82,40 @@
 		invoice.locations = invoice.locations.filter((l) => l.id !== id);
 	}
 
+	function addAngle(e: SubmitEvent) {
+		e.preventDefault();
+		if (!invoice) return;
+		const form = e.currentTarget as HTMLFormElement;
+		const input = form.querySelector('input[name="angleName"]') as HTMLInputElement;
+		const trimmed = input.value.trim();
+		if (!trimmed) return;
+
+		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		if (!currentAngles.includes(trimmed)) {
+			invoice.angles = [...currentAngles, trimmed];
+		}
+		input.value = '';
+	}
+
+	function deleteAngle(angleToDelete: string) {
+		if (!invoice) return;
+		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		invoice.angles = currentAngles.filter((a) => a !== angleToDelete);
+	}
+
 	async function handleUpload(event: Event, locationId: string) {
 		const input = event.target as HTMLInputElement;
 		if (!input.files || !invoice) return;
+
+		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		const defaultAngle = currentAngles[0] || 'Default Angle';
 
 		for (const file of input.files) {
 			const dataUrl = await fileToDataUrl(file);
 			const newPhoto: Photo = {
 				invoiceId: invoice.id!,
 				locationId,
-				angle: 'Default Angle',
+				angle: defaultAngle,
 				type: 'before',
 				dataUrl,
 				timestamp: Date.now()
@@ -117,6 +144,12 @@
 	async function deletePhoto(id: number) {
 		await db.photos.delete(id);
 		photos = photos.filter((p) => p.id !== id);
+	}
+
+	interface jsPDFWithAutoTable extends jsPDF {
+		lastAutoTable?: {
+			finalY: number;
+		};
 	}
 
 	function generatePDF(action: 'download' | 'preview') {
@@ -185,7 +218,7 @@
 		// --- INVOICE FOOTER ---
 
 		// Extract the Y position immediately after the table ends
-		const finalY = (doc as any).lastAutoTable?.finalY || 85;
+		const finalY = (doc as jsPDFWithAutoTable).lastAutoTable?.finalY || 85;
 
 		// Bottom: Payable to Check Notice
 		doc.setFontSize(12);
@@ -334,7 +367,7 @@
 		/>
 	</div>
 
-	<!-- NEW: Invoice Document Details Configuration -->
+	<!-- Invoice Document Details Configuration -->
 	<div class="invoice-details-card">
 		<h3>Invoice Details</h3>
 		<div class="details-grid">
@@ -429,6 +462,22 @@
 				<!-- Photo Management -->
 				<div class="photo-section">
 					<h4>Photos</h4>
+
+					<!-- Angles Configuration Manager -->
+					<div class="angle-manager">
+						<span>Manage Custom Angles:</span>
+						{#each invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angle (angle)}
+							<span class="angle-badge">
+								{angle}
+								<button type="button" class="delete-angle-btn" onclick={() => deleteAngle(angle)} title="Delete angle">&times;</button>
+							</span>
+						{/each}
+						<form class="add-angle-form" onsubmit={addAngle}>
+							<input type="text" name="angleName" placeholder="New Angle" />
+							<button type="submit">Add</button>
+						</form>
+					</div>
+
 					<input type="file" multiple accept="image/*" onchange={(e) => handleUpload(e, loc.id)} />
 
 					<div class="photo-grid">
@@ -436,12 +485,36 @@
 							<div class="photo-card">
 								<img src={photo.dataUrl} alt="Lawn" />
 								<div class="photo-controls">
-									<input
-										type="text"
-										bind:value={photo.angle}
-										onblur={() => updatePhoto(photo)}
-										placeholder="Angle (e.g. Front)"
-									/>
+									<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
+									<select
+										value={(invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
+										onchange={(e) => {
+											const val = (e.target as HTMLSelectElement).value;
+											if (val !== 'other') {
+												photo.angle = val;
+												updatePhoto(photo);
+											} else {
+												photo.angle = 'Custom Angle';
+												updatePhoto(photo);
+											}
+										}}
+									>
+										{#each invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
+											<option value={angleOption}>{angleOption}</option>
+										{/each}
+										<option value="other">Other...</option>
+									</select>
+
+									<!-- Display text input field when custom "Other" angle has been selected -->
+									{#if !(invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
+										<input
+											type="text"
+											bind:value={photo.angle}
+											onblur={() => updatePhoto(photo)}
+											placeholder="Custom Angle Name"
+										/>
+									{/if}
+
 									<select bind:value={photo.type} onchange={() => updatePhoto(photo)}>
 										<option value="before">Before</option>
 										<option value="after">After</option>
@@ -514,6 +587,69 @@
 		border-radius: 4px;
 		font-family: inherit;
 		font-size: 1rem;
+	}
+
+	/* Angle Manager Styles */
+	.angle-manager {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 1rem;
+		padding: 0.75rem;
+		background: #f9fafb;
+		border: 1px solid #e5e7eb;
+		border-radius: 6px;
+	}
+	.angle-manager span {
+		font-weight: 500;
+		font-size: 0.9rem;
+		color: #374151;
+	}
+	.angle-badge {
+		background: #e0f2fe;
+		color: #0369a1 !important;
+		padding: 0.25rem 0.6rem;
+		border-radius: 9999px;
+		font-size: 0.85rem !important;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+	}
+	.delete-angle-btn {
+		background: none;
+		border: none;
+		color: #ef4444;
+		cursor: pointer;
+		font-weight: bold;
+		padding: 0;
+		font-size: 1.1rem;
+		line-height: 1;
+	}
+	.delete-angle-btn:hover {
+		color: #b91c1c;
+	}
+	.add-angle-form {
+		display: flex;
+		gap: 0.25rem;
+	}
+	.add-angle-form input {
+		padding: 0.25rem 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		font-size: 0.85rem;
+	}
+	.add-angle-form button {
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		padding: 0.25rem 0.5rem;
+		font-size: 0.85rem;
+		cursor: pointer;
+	}
+	.add-angle-form button:hover {
+		background-color: #2563eb;
 	}
 
 	/* Existing Styles */
