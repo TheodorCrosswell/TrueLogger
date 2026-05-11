@@ -5,7 +5,7 @@
 	import { resolve } from '$app/paths';
 	import jsPDF from 'jspdf';
 	import autoTable from 'jspdf-autotable';
-	import exifr from 'exifr'; // <-- Import exifr
+	import exifr from 'exifr'; 
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -18,7 +18,6 @@
 				customerAddress?: string;
 				invoiceDate?: string;
 				invoiceNumber?: string;
-				angles?: string[];
 		  })
 		| undefined
 	>(undefined);
@@ -29,7 +28,7 @@
 	// PDF Layout State
 	let photoLayout = $state<'none' | '1' | '2' | '6'>('none');
 	let pdfPreviewUrl = $state<string | null>(null);
-	let showTimestampsOnPdf = $state(true); // <-- New state for the PDF checkbox
+	let showTimestampsOnPdf = $state(true); 
 
 	// Derived state groups photos natively by angle, then by before/after
 	let sortedPhotos = $derived(
@@ -44,8 +43,15 @@
 
 	onMount(async () => {
 		invoice = await db.invoices.get(data.id);
-		if (invoice && !invoice.angles) {
-			invoice.angles = ['Front', 'Back', 'Left Side', 'Right Side'];
+		if (invoice) {
+			// Migrate legacy global invoice angles to individual locations if they don't have any
+			const globalAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+			invoice.locations = invoice.locations.map(loc => {
+				if (!loc.angles) {
+					loc.angles = [...globalAngles];
+				}
+				return loc;
+			});
 		}
 		photos = await db.photos.where('invoiceId').equals(data.id).toArray();
 		isLoaded = true;
@@ -74,7 +80,8 @@
 				service: 'Mowing',
 				cost: 0,
 				serviced: false,
-				notes: ''
+				notes: '',
+				angles: ['Front', 'Back', 'Left Side', 'Right Side']
 			}
 		];
 	}
@@ -84,7 +91,7 @@
 		invoice.locations = invoice.locations.filter((l) => l.id !== id);
 	}
 
-	function addAngle(e: SubmitEvent) {
+	function addAngle(e: SubmitEvent, locId: string) {
 		e.preventDefault();
 		if (!invoice) return;
 		const form = e.currentTarget as HTMLFormElement;
@@ -92,24 +99,31 @@
 		const trimmed = input.value.trim();
 		if (!trimmed) return;
 
-		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		const loc = invoice.locations.find((l) => l.id === locId);
+		if (!loc) return;
+
+		const currentAngles = loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
 		if (!currentAngles.includes(trimmed)) {
-			invoice.angles = [...currentAngles, trimmed];
+			loc.angles = [...currentAngles, trimmed];
 		}
 		input.value = '';
 	}
 
-	function deleteAngle(angleToDelete: string) {
+	function deleteAngle(locId: string, angleToDelete: string) {
 		if (!invoice) return;
-		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
-		invoice.angles = currentAngles.filter((a) => a !== angleToDelete);
+		const loc = invoice.locations.find((l) => l.id === locId);
+		if (!loc) return;
+
+		const currentAngles = loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		loc.angles = currentAngles.filter((a) => a !== angleToDelete);
 	}
 
 	async function handleUpload(event: Event, locationId: string) {
 		const input = event.target as HTMLInputElement;
 		if (!input.files || !invoice) return;
 
-		const currentAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		const loc = invoice.locations.find((l) => l.id === locationId);
+		const currentAngles = loc?.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
 		const defaultAngle = currentAngles[0] || 'Default Angle';
 
 		for (const file of input.files) {
@@ -506,13 +520,13 @@
 					<!-- Angles Configuration Manager -->
 					<div class="angle-manager">
 						<span>Manage Custom Angles:</span>
-						{#each invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angle (angle)}
+						{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angle (angle)}
 							<span class="angle-badge">
 								{angle}
-								<button type="button" class="delete-angle-btn" onclick={() => deleteAngle(angle)} title="Delete angle">&times;</button>
+								<button type="button" class="delete-angle-btn" onclick={() => deleteAngle(loc.id, angle)} title="Delete angle">&times;</button>
 							</span>
 						{/each}
-						<form class="add-angle-form" onsubmit={addAngle}>
+						<form class="add-angle-form" onsubmit={(e) => addAngle(e, loc.id)}>
 							<input type="text" name="angleName" placeholder="New Angle" />
 							<button type="submit">Add</button>
 						</form>
@@ -527,7 +541,7 @@
 								<div class="photo-controls">
 									<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
 									<select
-										value={(invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
+										value={(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
 										onchange={(e) => {
 											const val = (e.target as HTMLSelectElement).value;
 											if (val !== 'other') {
@@ -539,14 +553,14 @@
 											}
 										}}
 									>
-										{#each invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
+										{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
 											<option value={angleOption}>{angleOption}</option>
 										{/each}
 										<option value="other">Other...</option>
 									</select>
 
 									<!-- Display text input field when custom "Other" angle has been selected -->
-									{#if !(invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
+									{#if !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
 										<input
 											type="text"
 											bind:value={photo.angle}

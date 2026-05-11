@@ -7,6 +7,7 @@ export interface Location {
 	cost: number;
 	serviced: boolean;
 	notes: string;
+	angles?: string[]; // Added: Custom angles mapped per location
 }
 
 export interface Invoice {
@@ -14,6 +15,7 @@ export interface Invoice {
 	title: string;
 	createdAt: number;
 	locations: Location[];
+	angles?: string[]; // Preserved for legacy migrations
 }
 
 export interface Photo {
