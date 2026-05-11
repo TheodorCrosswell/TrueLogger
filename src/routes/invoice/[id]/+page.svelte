@@ -86,9 +86,22 @@
 		];
 	}
 
-	function removeLocation(id: string) {
+	async function removeLocation(id: string) {
 		if (!invoice) return;
+		
+		// 1. Remove the location from the invoice document
 		invoice.locations = invoice.locations.filter((l) => l.id !== id);
+
+		// 2. Find and delete all photos associated with this location
+		const photosToDelete = photos.filter((p) => p.locationId === id);
+		for (const photo of photosToDelete) {
+			if (photo.id) {
+				await db.photos.delete(photo.id);
+			}
+		}
+
+		// 3. Update the local photos state to remove them from the UI immediately
+		photos = photos.filter((p) => p.locationId !== id);
 	}
 
 	function addAngle(e: SubmitEvent, locId: string) {
