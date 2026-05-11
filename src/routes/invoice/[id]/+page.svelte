@@ -118,7 +118,8 @@
 				angle: defaultAngle,
 				type: 'before',
 				dataUrl,
-				timestamp: Date.now()
+				// Read the file's creation/modified timestamp instead of the upload time
+				timestamp: file.lastModified || Date.now() 
 			};
 			const photoId = await db.photos.add(newPhoto);
 			photos = [...photos, { ...newPhoto, id: photoId }];
@@ -151,8 +152,8 @@
 			finalY: number;
 		};
 	}
-
-	function generatePDF(action: 'download' | 'preview') {
+	
+function generatePDF(action: 'download' | 'preview') {
 		if (!invoice) return;
 		const doc = new jsPDF();
 		const pageWidth = doc.internal.pageSize.width;
@@ -287,9 +288,14 @@
 				const locName = invoice.locations.find((l) => l.id === photo.locationId)?.name || 'Unknown';
 				doc.setFontSize(14);
 				doc.text(`${locName} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
+				
+				// Add Timestamp
+				doc.setFontSize(10);
+				doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
+				
 				const props = doc.getImageProperties(photo.dataUrl);
-				const { w, h } = fitImage(props, 190, 250);
-				doc.addImage(photo.dataUrl, props.fileType, 10, 25, w, h);
+				const { w, h } = fitImage(props, 190, 245);
+				doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h);
 			}
 		} else if (photoLayout === '2') {
 			// 2 Photos per page (1 Pair Stacked)
@@ -300,7 +306,7 @@
 
 				if (pair.before) {
 					doc.setFontSize(12);
-					doc.text('Before:', 10, 30);
+					doc.text(`Before: ${new Date(pair.before.timestamp).toLocaleString()}`, 10, 30);
 					const props = doc.getImageProperties(pair.before.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
 					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h);
@@ -308,7 +314,7 @@
 
 				if (pair.after) {
 					doc.setFontSize(12);
-					doc.text('After:', 10, 155);
+					doc.text(`After: ${new Date(pair.after.timestamp).toLocaleString()}`, 10, 155);
 					const props = doc.getImageProperties(pair.after.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
 					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h);
@@ -328,14 +334,16 @@
 					doc.text(`${pair.locationName} - ${pair.angle}`, 10, rowY);
 
 					if (pair.before) {
-						doc.text('Before', 10, rowY + 6);
+						doc.setFontSize(10);
+						doc.text(`Before - ${new Date(pair.before.timestamp).toLocaleString()}`, 10, rowY + 6);
 						const props = doc.getImageProperties(pair.before.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
 						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h);
 					}
 
 					if (pair.after) {
-						doc.text('After', 110, rowY + 6);
+						doc.setFontSize(10);
+						doc.text(`After - ${new Date(pair.after.timestamp).toLocaleString()}`, 110, rowY + 6);
 						const props = doc.getImageProperties(pair.after.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
 						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h);
@@ -352,6 +360,7 @@
 			pdfPreviewUrl = URL.createObjectURL(blob);
 		}
 	}
+
 </script>
 
 {#if !isLoaded}

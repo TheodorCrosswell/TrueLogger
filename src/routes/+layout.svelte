@@ -3,7 +3,7 @@
 </script>
 
 <svelte:head>
-	<title>Lawn Mowing PWA</title>
+	<title>TrueLogger</title>
 </svelte:head>
 
 <main>

@@ -8,20 +8,15 @@ export default defineConfig({
 		VitePWA({
 			registerType: 'autoUpdate',
 			manifest: {
-				name: 'Lawn Mowing Invoices',
-				short_name: 'LawnInvoices',
-				description: 'PWA for managing lawn care invoices',
+				name: 'TrueLogger',
+				short_name: 'TrueLogger',
+				description: 'PWA for managing invoices',
 				theme_color: '#10b981',
 				icons: [
 					{
-						src: 'pwa-192x192.png',
-						sizes: '192x192',
-						type: 'image/png'
-					},
-					{
-						src: 'pwa-512x512.png',
-						sizes: '512x512',
-						type: 'image/png'
+						"src": "/favicon.png",
+						"sizes": "1024x1024",
+						"type": "image/png"
 					}
 				]
 			}
