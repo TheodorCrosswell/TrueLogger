@@ -5,6 +5,7 @@
 	import { resolve } from '$app/paths';
 	import jsPDF from 'jspdf';
 	import autoTable from 'jspdf-autotable';
+	import exifr from 'exifr'; // <-- Import exifr
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -28,6 +29,7 @@
 	// PDF Layout State
 	let photoLayout = $state<'none' | '1' | '2' | '6'>('none');
 	let pdfPreviewUrl = $state<string | null>(null);
+	let showTimestampsOnPdf = $state(true); // <-- New state for the PDF checkbox
 
 	// Derived state groups photos natively by angle, then by before/after
 	let sortedPhotos = $derived(
@@ -112,14 +114,27 @@
 
 		for (const file of input.files) {
 			const dataUrl = await fileToDataUrl(file);
+			
+			// Fallback to lastModified/Date.now()
+			let timestamp = file.lastModified || Date.now();
+			
+			// Extract exact photo taken time from EXIF to fix the Android issue
+			try {
+				const exifData = await exifr.parse(file, { pick: ['DateTimeOriginal'] });
+				if (exifData?.DateTimeOriginal) {
+					timestamp = new Date(exifData.DateTimeOriginal).getTime();
+				}
+			} catch (err) {
+				console.warn('Could not read EXIF data', err);
+			}
+
 			const newPhoto: Photo = {
 				invoiceId: invoice.id!,
 				locationId,
 				angle: defaultAngle,
 				type: 'before',
 				dataUrl,
-				// Read the file's creation/modified timestamp instead of the upload time
-				timestamp: file.lastModified || Date.now() 
+				timestamp
 			};
 			const photoId = await db.photos.add(newPhoto);
 			photos = [...photos, { ...newPhoto, id: photoId }];
@@ -153,7 +168,7 @@
 		};
 	}
 	
-function generatePDF(action: 'download' | 'preview') {
+	function generatePDF(action: 'download' | 'preview') {
 		if (!invoice) return;
 		const doc = new jsPDF();
 		const pageWidth = doc.internal.pageSize.width;
@@ -289,9 +304,11 @@ function generatePDF(action: 'download' | 'preview') {
 				doc.setFontSize(14);
 				doc.text(`${locName} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
 				
-				// Add Timestamp
-				doc.setFontSize(10);
-				doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
+				// Conditionally add Timestamp
+				if (showTimestampsOnPdf) {
+					doc.setFontSize(10);
+					doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
+				}
 				
 				const props = doc.getImageProperties(photo.dataUrl);
 				const { w, h } = fitImage(props, 190, 245);
@@ -306,7 +323,9 @@ function generatePDF(action: 'download' | 'preview') {
 
 				if (pair.before) {
 					doc.setFontSize(12);
-					doc.text(`Before: ${new Date(pair.before.timestamp).toLocaleString()}`, 10, 30);
+					const label = showTimestampsOnPdf ? `Before: ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+					doc.text(label, 10, 30);
+					
 					const props = doc.getImageProperties(pair.before.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
 					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h);
@@ -314,7 +333,9 @@ function generatePDF(action: 'download' | 'preview') {
 
 				if (pair.after) {
 					doc.setFontSize(12);
-					doc.text(`After: ${new Date(pair.after.timestamp).toLocaleString()}`, 10, 155);
+					const label = showTimestampsOnPdf ? `After: ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+					doc.text(label, 10, 155);
+
 					const props = doc.getImageProperties(pair.after.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
 					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h);
@@ -335,7 +356,9 @@ function generatePDF(action: 'download' | 'preview') {
 
 					if (pair.before) {
 						doc.setFontSize(10);
-						doc.text(`Before - ${new Date(pair.before.timestamp).toLocaleString()}`, 10, rowY + 6);
+						const label = showTimestampsOnPdf ? `Before - ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+						doc.text(label, 10, rowY + 6);
+
 						const props = doc.getImageProperties(pair.before.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
 						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h);
@@ -343,7 +366,9 @@ function generatePDF(action: 'download' | 'preview') {
 
 					if (pair.after) {
 						doc.setFontSize(10);
-						doc.text(`After - ${new Date(pair.after.timestamp).toLocaleString()}`, 110, rowY + 6);
+						const label = showTimestampsOnPdf ? `After - ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+						doc.text(label, 110, rowY + 6);
+
 						const props = doc.getImageProperties(pair.after.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
 						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h);
@@ -428,6 +453,12 @@ function generatePDF(action: 'download' | 'preview') {
 				<option value="6">6 per page (3 Pairs)</option>
 			</select>
 		</label>
+		
+		<label class="checkbox-label" style="font-weight: 500;">
+			<input type="checkbox" bind:checked={showTimestampsOnPdf} />
+			Show Timestamps on PDF
+		</label>
+
 		<div class="export-actions">
 			<button class="preview-btn" onclick={() => generatePDF('preview')}>Preview PDF</button>
 			<button class="export-btn" onclick={() => generatePDF('download')}>Export PDF</button>
