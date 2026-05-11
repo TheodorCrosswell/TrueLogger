@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { db, type Invoice, type Photo } from '$lib/db';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import jsPDF from 'jspdf';
 	import autoTable from 'jspdf-autotable';
 	import type { PageData } from './$types';
@@ -11,6 +12,10 @@
 	let invoice = $state<Invoice | undefined>(undefined);
 	let photos = $state<Photo[]>([]);
 	let isLoaded = $state(false);
+
+	// PDF Layout State
+	let photoLayout = $state<'none' | '1' | '2' | '6'>('none');
+	let pdfPreviewUrl = $state<string | null>(null);
 
 	// Derived state groups photos natively by angle, then by before/after
 	let sortedPhotos = $derived(
@@ -27,6 +32,11 @@
 		invoice = await db.invoices.get(data.id);
 		photos = await db.photos.where('invoiceId').equals(data.id).toArray();
 		isLoaded = true;
+	});
+
+	// Cleanup memory leaks from Object URLs
+	onDestroy(() => {
+		if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
 	});
 
 	// Svelte 5 Rune Effect: Auto-save invoice to Dexie when modified
@@ -97,7 +107,7 @@
 		photos = photos.filter((p) => p.id !== id);
 	}
 
-	function exportPDF() {
+	function generatePDF(action: 'download' | 'preview') {
 		if (!invoice) return;
 		const doc = new jsPDF();
 
@@ -129,7 +139,123 @@
 			}
 		});
 
-		doc.save(`${invoice.title}.pdf`);
+		// Helper to maintain image aspect ratio within boundaries
+		const fitImage = (
+			props: { width: number; height: number },
+			maxWidth: number,
+			maxHeight: number
+		) => {
+			const ratio = props.width / props.height;
+			let w = maxWidth;
+			let h = w / ratio;
+			if (h > maxHeight) {
+				h = maxHeight;
+				w = h * ratio;
+			}
+			return { w, h };
+		};
+
+		// Helper struct to construct matched pairs for 2-per-page and 6-per-page logic
+		const pairs: { locationName: string; angle: string; before?: Photo; after?: Photo }[] = [];
+
+		if (photoLayout === '2' || photoLayout === '6') {
+			const grouped: Record<string, Photo[]> = {};
+			for (const p of sortedPhotos) {
+				const key = `${p.locationId}::${p.angle}`;
+				if (!grouped[key]) grouped[key] = [];
+				grouped[key].push(p);
+			}
+
+			for (const [key, photosInGroup] of Object.entries(grouped)) {
+				const [locId, angle] = key.split('::');
+				const locName = invoice.locations.find((l) => l.id === locId)?.name || 'Unknown';
+
+				const befores = photosInGroup.filter((p) => p.type === 'before');
+				const afters = photosInGroup.filter((p) => p.type === 'after');
+
+				const maxLen = Math.max(befores.length, afters.length);
+				for (let i = 0; i < maxLen; i++) {
+					pairs.push({
+						locationName: locName,
+						angle,
+						before: befores[i],
+						after: afters[i]
+					});
+				}
+			}
+		}
+
+		if (photoLayout === '1') {
+			// 1 Photo per page
+			for (const photo of sortedPhotos) {
+				doc.addPage();
+				const locName = invoice.locations.find((l) => l.id === photo.locationId)?.name || 'Unknown';
+				doc.setFontSize(14);
+				doc.text(`${locName} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
+				const props = doc.getImageProperties(photo.dataUrl);
+				const { w, h } = fitImage(props, 190, 250);
+				doc.addImage(photo.dataUrl, props.fileType, 10, 25, w, h);
+			}
+		} else if (photoLayout === '2') {
+			// 2 Photos per page (1 Pair Stacked)
+			for (const pair of pairs) {
+				doc.addPage();
+				doc.setFontSize(14);
+				doc.text(`${pair.locationName} - ${pair.angle}`, 10, 20);
+
+				if (pair.before) {
+					doc.setFontSize(12);
+					doc.text('Before:', 10, 30);
+					const props = doc.getImageProperties(pair.before.dataUrl);
+					const { w, h } = fitImage(props, 190, 110);
+					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h);
+				}
+
+				if (pair.after) {
+					doc.setFontSize(12);
+					doc.text('After:', 10, 155);
+					const props = doc.getImageProperties(pair.after.dataUrl);
+					const { w, h } = fitImage(props, 190, 110);
+					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h);
+				}
+			}
+		} else if (photoLayout === '6') {
+			// 6 Photos per page (3 Pairs Side-by-Side)
+			for (let i = 0; i < pairs.length; i += 3) {
+				const chunk = pairs.slice(i, i + 3);
+				doc.addPage();
+				doc.setFontSize(14);
+				doc.text('Photos', 10, 15);
+
+				chunk.forEach((pair, index) => {
+					const rowY = 25 + index * 90;
+					doc.setFontSize(12);
+					doc.text(`${pair.locationName} - ${pair.angle}`, 10, rowY);
+
+					if (pair.before) {
+						doc.text('Before', 10, rowY + 6);
+						const props = doc.getImageProperties(pair.before.dataUrl);
+						const { w, h } = fitImage(props, 90, 70);
+						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h);
+					}
+
+					if (pair.after) {
+						doc.text('After', 110, rowY + 6);
+						const props = doc.getImageProperties(pair.after.dataUrl);
+						const { w, h } = fitImage(props, 90, 70);
+						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h);
+					}
+				});
+			}
+		}
+
+		if (action === 'download') {
+			doc.save(`${invoice.title}.pdf`);
+		} else {
+			if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
+			const blob = doc.output('blob');
+			pdfPreviewUrl = URL.createObjectURL(blob);
+		}
 	}
 </script>
 
@@ -137,10 +263,37 @@
 	<p>Loading invoice...</p>
 {:else if invoice}
 	<div class="header-bar">
-		<button onclick={() => goto('/')}>&larr; Back</button>
+		<button onclick={() => goto(resolve('/'))}>&larr; Back</button>
 		<input class="title-input" type="text" bind:value={invoice.title} />
-		<button class="export-btn" onclick={exportPDF}>Export PDF</button>
 	</div>
+
+	<!-- PDF Output & Preview Controls -->
+	<div class="pdf-controls">
+		<label class="layout-label">
+			<strong>Photo Layout:</strong>
+			<select bind:value={photoLayout}>
+				<option value="none">No Photos</option>
+				<option value="1">1 per page</option>
+				<option value="2">2 per page (Paired Before/After)</option>
+				<option value="6">6 per page (3 Pairs)</option>
+			</select>
+		</label>
+		<div class="export-actions">
+			<button class="preview-btn" onclick={() => generatePDF('preview')}>Preview PDF</button>
+			<button class="export-btn" onclick={() => generatePDF('download')}>Export PDF</button>
+		</div>
+	</div>
+
+	<!-- Preview Viewer -->
+	{#if pdfPreviewUrl}
+		<div class="pdf-preview-container">
+			<div class="preview-header">
+				<h3>PDF Preview</h3>
+				<button class="danger" onclick={() => (pdfPreviewUrl = null)}>Close Preview</button>
+			</div>
+			<iframe src={pdfPreviewUrl} title="PDF Preview" class="pdf-iframe"></iframe>
+		</div>
+	{/if}
 
 	<div class="locations">
 		{#each invoice.locations as loc (loc.id)}
@@ -200,15 +353,61 @@
 		display: flex;
 		gap: 1rem;
 		align-items: center;
-		margin-bottom: 2rem;
+		margin-bottom: 1rem;
 	}
 	.title-input {
 		flex: 1;
 		font-size: 1.5rem;
 		font-weight: bold;
 	}
+	.pdf-controls {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		background: white;
+		padding: 1rem;
+		border-radius: 8px;
+		margin-bottom: 2rem;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+		flex-wrap: wrap;
+		gap: 1rem;
+	}
+	.layout-label {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.export-actions {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.preview-btn {
+		background-color: #3b82f6;
+	}
 	.export-btn {
 		background-color: #8b5cf6;
+	}
+	.pdf-preview-container {
+		background: white;
+		padding: 1rem;
+		border-radius: 8px;
+		margin-bottom: 2rem;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+	}
+	.preview-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 1rem;
+	}
+	.preview-header h3 {
+		margin: 0;
+	}
+	.pdf-iframe {
+		width: 100%;
+		height: 600px;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
 	}
 	.locations {
 		display: flex;

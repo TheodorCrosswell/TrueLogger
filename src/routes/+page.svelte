@@ -2,6 +2,7 @@
 	import { db, type Invoice } from '$lib/db';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 
 	let invoices = $state<Invoice[]>([]);
 	let isLoading = $state(true);
@@ -17,7 +18,7 @@
 			createdAt: Date.now(),
 			locations: []
 		});
-		goto(`/invoice/${id}`);
+		goto(resolve(`/invoice/${id}`));
 	}
 
 	async function reuseInvoice(oldInvoice: Invoice) {
@@ -32,7 +33,7 @@
 			createdAt: Date.now(),
 			locations: newLocations
 		});
-		goto(`/invoice/${id}`);
+		goto(resolve(`/invoice/${id}`));
 	}
 </script>
 
@@ -57,7 +58,7 @@
 				<p>Locations: {invoice.locations.length}</p>
 				<p>Created: {new Date(invoice.createdAt).toLocaleDateString()}</p>
 				<div class="actions">
-					<button onclick={() => goto(`/invoice/${invoice.id}`)}>Open</button>
+					<button onclick={() => goto(resolve(`/invoice/${invoice.id}`))}>Open</button>
 					<button class="reuse" onclick={() => reuseInvoice(invoice)}>Reuse for Next Cycle</button>
 				</div>
 			</div>
