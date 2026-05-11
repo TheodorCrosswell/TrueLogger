@@ -25,6 +25,9 @@
 	let photos = $state<Photo[]>([]);
 	let isLoaded = $state(false);
 
+	// Collapsible Locations State
+	let expandedLocations = $state<Record<string, boolean>>({});
+
 	// PDF Layout State
 	let photoLayout = $state<'none' | '1' | '2' | '6'>('none');
 	let pdfPreviewUrl = $state<string | null>(null);
@@ -70,12 +73,17 @@
 		}
 	});
 
+	function toggleLocation(id: string) {
+		expandedLocations[id] = !expandedLocations[id];
+	}
+
 	function addLocation() {
 		if (!invoice) return;
+		const newId = crypto.randomUUID();
 		invoice.locations = [
 			...invoice.locations,
 			{
-				id: crypto.randomUUID(),
+				id: newId,
 				name: 'New Location',
 				service: 'Mowing',
 				cost: 0,
@@ -84,6 +92,8 @@
 				angles: ['Front', 'Back', 'Left Side', 'Right Side']
 			}
 		];
+		// Auto-expand newly added locations so they can be immediately edited
+		expandedLocations[newId] = true;
 	}
 
 	async function removeLocation(id: string) {
@@ -91,6 +101,9 @@
 		
 		// 1. Remove the location from the invoice document
 		invoice.locations = invoice.locations.filter((l) => l.id !== id);
+
+		// Clean up UI expanded state
+		delete expandedLocations[id];
 
 		// 2. Find and delete all photos associated with this location
 		const photosToDelete = photos.filter((p) => p.locationId === id);
@@ -506,93 +519,102 @@
 	<div class="locations">
 		{#each invoice.locations as loc (loc.id)}
 			<div class="location-card">
-				<div class="loc-header">
+				<div class="loc-header {expandedLocations[loc.id] ? 'expanded' : ''}">
+					<button 
+						class="toggle-btn" 
+						aria-label="Toggle location" 
+						onclick={() => toggleLocation(loc.id)}
+					>
+						{expandedLocations[loc.id] ? '▼' : '▶'}
+					</button>
 					<input type="text" bind:value={loc.name} placeholder="Location Name" />
 					<button class="danger" onclick={() => removeLocation(loc.id)}>X</button>
 				</div>
 
-				<div class="loc-grid">
-					<label>Service: <input type="text" bind:value={loc.service} /></label>
-					<label>Cost ($): <input type="number" bind:value={loc.cost} /></label>
-					<label class="checkbox-label">
-						<input type="checkbox" bind:checked={loc.serviced} />
-						Serviced this cycle?
-					</label>
-				</div>
-
-				<textarea
-					class="notes-textarea"
-					bind:value={loc.notes}
-					placeholder="Notes for this location..."
-				></textarea>
-
-				<!-- Photo Management -->
-				<div class="photo-section">
-					<h4>Photos</h4>
-
-					<!-- Angles Configuration Manager -->
-					<div class="angle-manager">
-						<span>Manage Custom Angles:</span>
-						{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angle (angle)}
-							<span class="angle-badge">
-								{angle}
-								<button type="button" class="delete-angle-btn" onclick={() => deleteAngle(loc.id, angle)} title="Delete angle">&times;</button>
-							</span>
-						{/each}
-						<form class="add-angle-form" onsubmit={(e) => addAngle(e, loc.id)}>
-							<input type="text" name="angleName" placeholder="New Angle" />
-							<button type="submit">Add</button>
-						</form>
+				{#if expandedLocations[loc.id]}
+					<div class="loc-grid">
+						<label>Service: <input type="text" bind:value={loc.service} /></label>
+						<label>Cost ($): <input type="number" bind:value={loc.cost} /></label>
+						<label class="checkbox-label">
+							<input type="checkbox" bind:checked={loc.serviced} />
+							Serviced this cycle?
+						</label>
 					</div>
 
-					<input type="file" multiple accept="image/*" onchange={(e) => handleUpload(e, loc.id)} />
+					<textarea
+						class="notes-textarea"
+						bind:value={loc.notes}
+						placeholder="Notes for this location..."
+					></textarea>
 
-					<div class="photo-grid">
-						{#each sortedPhotos.filter((p) => p.locationId === loc.id) as photo (photo.id)}
-							<div class="photo-card">
-								<img src={photo.dataUrl} alt="Lawn" />
-								<div class="photo-controls">
-									<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
-									<select
-										value={(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
-										onchange={(e) => {
-											const val = (e.target as HTMLSelectElement).value;
-											if (val !== 'other') {
-												photo.angle = val;
-												updatePhoto(photo);
-											} else {
-												photo.angle = 'Custom Angle';
-												updatePhoto(photo);
-											}
-										}}
-									>
-										{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
-											<option value={angleOption}>{angleOption}</option>
-										{/each}
-										<option value="other">Other...</option>
-									</select>
+					<!-- Photo Management -->
+					<div class="photo-section">
+						<h4>Photos</h4>
 
-									<!-- Display text input field when custom "Other" angle has been selected -->
-									{#if !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
-										<input
-											type="text"
-											bind:value={photo.angle}
-											onblur={() => updatePhoto(photo)}
-											placeholder="Custom Angle Name"
-										/>
-									{/if}
+						<!-- Angles Configuration Manager -->
+						<div class="angle-manager">
+							<span>Manage Custom Angles:</span>
+							{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angle (angle)}
+								<span class="angle-badge">
+									{angle}
+									<button type="button" class="delete-angle-btn" onclick={() => deleteAngle(loc.id, angle)} title="Delete angle">&times;</button>
+								</span>
+							{/each}
+							<form class="add-angle-form" onsubmit={(e) => addAngle(e, loc.id)}>
+								<input type="text" name="angleName" placeholder="New Angle" />
+								<button type="submit">Add</button>
+							</form>
+						</div>
 
-									<select bind:value={photo.type} onchange={() => updatePhoto(photo)}>
-										<option value="before">Before</option>
-										<option value="after">After</option>
-									</select>
-									<span class="meta">{new Date(photo.timestamp).toLocaleString()}</span>
-									<button class="danger" onclick={() => deletePhoto(photo.id!)}>Delete</button>
+						<input type="file" multiple accept="image/*" onchange={(e) => handleUpload(e, loc.id)} />
+
+						<div class="photo-grid">
+							{#each sortedPhotos.filter((p) => p.locationId === loc.id) as photo (photo.id)}
+								<div class="photo-card">
+									<img src={photo.dataUrl} alt="Lawn" />
+									<div class="photo-controls">
+										<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
+										<select
+											value={(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
+											onchange={(e) => {
+												const val = (e.target as HTMLSelectElement).value;
+												if (val !== 'other') {
+													photo.angle = val;
+													updatePhoto(photo);
+												} else {
+													photo.angle = 'Custom Angle';
+													updatePhoto(photo);
+												}
+											}}
+										>
+											{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
+												<option value={angleOption}>{angleOption}</option>
+											{/each}
+											<option value="other">Other...</option>
+										</select>
+
+										<!-- Display text input field when custom "Other" angle has been selected -->
+										{#if !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
+											<input
+												type="text"
+												bind:value={photo.angle}
+												onblur={() => updatePhoto(photo)}
+												placeholder="Custom Angle Name"
+											/>
+										{/if}
+
+										<select bind:value={photo.type} onchange={() => updatePhoto(photo)}>
+											<option value="before">Before</option>
+											<option value="after">After</option>
+										</select>
+										<span class="meta">{new Date(photo.timestamp).toLocaleString()}</span>
+										<button class="danger" onclick={() => deletePhoto(photo.id!)}>Delete</button>
+									</div>
 								</div>
-							</div>
-						{/each}
+							{/each}
+						</div>
 					</div>
-				</div>
+				{/if}
 			</div>
 		{/each}
 	</div>
@@ -793,7 +815,28 @@
 	.loc-header {
 		display: flex;
 		gap: 1rem;
+		align-items: center;
+	}
+	.loc-header.expanded {
 		margin-bottom: 1rem;
+	}
+	.toggle-btn {
+		background: none;
+		border: none;
+		font-size: 1.1rem;
+		cursor: pointer;
+		color: #4b5563;
+		width: 32px;
+		height: 32px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 4px;
+		transition: background-color 0.2s, color 0.2s;
+	}
+	.toggle-btn:hover {
+		background-color: #f3f4f6;
+		color: #111827;
 	}
 	.loc-header input {
 		flex: 1;
