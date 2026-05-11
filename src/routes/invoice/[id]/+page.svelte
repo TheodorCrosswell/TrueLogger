@@ -9,7 +9,19 @@
 
 	let { data }: { data: PageData } = $props();
 
-	let invoice = $state<Invoice | undefined>(undefined);
+	// Note: You may need to ensure your 'Invoice' type in $lib/db.ts supports these new fields
+	let invoice = $state<
+		| (Invoice & {
+				contractorName?: string;
+				contractorAddress?: string;
+				customerName?: string;
+				customerAddress?: string;
+				invoiceDate?: string;
+				invoiceNumber?: string;
+		  })
+		| undefined
+	>(undefined);
+
 	let photos = $state<Photo[]>([]);
 	let isLoaded = $state(false);
 
@@ -110,10 +122,41 @@
 	function generatePDF(action: 'download' | 'preview') {
 		if (!invoice) return;
 		const doc = new jsPDF();
+		const pageWidth = doc.internal.pageSize.width;
+		const pageHeight = doc.internal.pageSize.height;
 
+		// --- INVOICE HEADER ---
+
+		// Top Left: Contractor Name
 		doc.setFontSize(20);
-		doc.text(invoice.title, 14, 22);
+		doc.text(invoice.contractorName || 'Contractor Name', 14, 22);
 
+		// Top Right: "INVOICE"
+		doc.setFontSize(24);
+		doc.text('INVOICE', pageWidth - 14, 22, { align: 'right' });
+
+		// Left side: Contractor Address
+		doc.setFontSize(10);
+		if (invoice.contractorAddress) {
+			const splitContractorAddress = doc.splitTextToSize(invoice.contractorAddress, 80);
+			doc.text(splitContractorAddress, 14, 30);
+		}
+
+		// Right side: Date and Invoice #
+		doc.text(`Date: ${invoice.invoiceDate || ''}`, pageWidth - 14, 30, { align: 'right' });
+		doc.text(`Invoice #: ${invoice.invoiceNumber || ''}`, pageWidth - 14, 35, { align: 'right' });
+
+		// Left side further down: Bill To Details
+		doc.setFontSize(12);
+		doc.text('Bill To:', 14, 55);
+		doc.setFontSize(10);
+		doc.text(invoice.customerName || 'Customer Name', 14, 61);
+		if (invoice.customerAddress) {
+			const splitCustomerAddress = doc.splitTextToSize(invoice.customerAddress, 80);
+			doc.text(splitCustomerAddress, 14, 66);
+		}
+
+		// --- INVOICE TABLE ---
 		const tableData = invoice.locations.map((loc) => [
 			loc.name,
 			loc.service,
@@ -127,7 +170,7 @@
 		tableData.push(['', '', '', 'GRAND TOTAL:', `$${total.toFixed(2)}`]);
 
 		autoTable(doc, {
-			startY: 30,
+			startY: 85,
 			head: [['Location', 'Service', 'Serviced', 'Notes', 'Cost']],
 			body: tableData,
 			footStyles: { fillColor: [200, 200, 200] },
@@ -138,6 +181,25 @@
 				}
 			}
 		});
+
+		// --- INVOICE FOOTER ---
+
+		// Extract the Y position immediately after the table ends
+		const finalY = (doc as any).lastAutoTable?.finalY || 85;
+
+		// Bottom: Payable to Check Notice
+		doc.setFontSize(12);
+		doc.text(
+			`Make all checks payable to ${invoice.contractorName || 'Contractor'}`,
+			14,
+			finalY + 15
+		);
+
+		// Footer: Thank you text
+		doc.setFontSize(14);
+		doc.text('THANK YOU FOR YOUR BUSINESS', pageWidth / 2, pageHeight - 15, { align: 'center' });
+
+		// --- PHOTOS LOGIC ---
 
 		// Helper to maintain image aspect ratio within boundaries
 		const fitImage = (
@@ -264,7 +326,53 @@
 {:else if invoice}
 	<div class="header-bar">
 		<button onclick={() => goto(resolve('/'))}>&larr; Back</button>
-		<input class="title-input" type="text" bind:value={invoice.title} />
+		<input
+			class="title-input"
+			type="text"
+			bind:value={invoice.title}
+			placeholder="Invoice Record Title"
+		/>
+	</div>
+
+	<!-- NEW: Invoice Document Details Configuration -->
+	<div class="invoice-details-card">
+		<h3>Invoice Details</h3>
+		<div class="details-grid">
+			<div class="details-col">
+				<label>
+					Contractor Name
+					<input type="text" bind:value={invoice.contractorName} placeholder="E.g. ACME Mowing" />
+				</label>
+				<label>
+					Contractor Address
+					<textarea bind:value={invoice.contractorAddress} rows="3" placeholder="123 Main St..."
+					></textarea>
+				</label>
+			</div>
+
+			<div class="details-col">
+				<label>
+					Bill To Customer Name
+					<input type="text" bind:value={invoice.customerName} placeholder="John Doe" />
+				</label>
+				<label>
+					Bill To Address
+					<textarea bind:value={invoice.customerAddress} rows="3" placeholder="456 Oak Ln..."
+					></textarea>
+				</label>
+			</div>
+
+			<div class="details-col">
+				<label>
+					Invoice Date
+					<input type="date" bind:value={invoice.invoiceDate} />
+				</label>
+				<label>
+					Invoice #
+					<input type="text" bind:value={invoice.invoiceNumber} placeholder="INV-001" />
+				</label>
+			</div>
+		</div>
 	</div>
 
 	<!-- PDF Output & Preview Controls -->
@@ -312,7 +420,11 @@
 					</label>
 				</div>
 
-				<textarea bind:value={loc.notes} placeholder="Notes for this location..."></textarea>
+				<textarea
+					class="notes-textarea"
+					bind:value={loc.notes}
+					placeholder="Notes for this location..."
+				></textarea>
 
 				<!-- Photo Management -->
 				<div class="photo-section">
@@ -353,13 +465,58 @@
 		display: flex;
 		gap: 1rem;
 		align-items: center;
-		margin-bottom: 1rem;
+		margin-bottom: 1.5rem;
 	}
 	.title-input {
 		flex: 1;
 		font-size: 1.5rem;
 		font-weight: bold;
+		padding: 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
 	}
+
+	/* Document Details Grid Styles */
+	.invoice-details-card {
+		background: white;
+		padding: 1.5rem;
+		border-radius: 8px;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+		margin-bottom: 1.5rem;
+	}
+	.invoice-details-card h3 {
+		margin-top: 0;
+		margin-bottom: 1.5rem;
+		color: #374151;
+	}
+	.details-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+		gap: 1.5rem;
+	}
+	.details-col {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+	.details-col label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		font-weight: 500;
+		font-size: 0.9rem;
+		color: #4b5563;
+	}
+	.details-col input,
+	.details-col textarea {
+		padding: 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		font-family: inherit;
+		font-size: 1rem;
+	}
+
+	/* Existing Styles */
 	.pdf-controls {
 		display: flex;
 		justify-content: space-between;
@@ -383,9 +540,19 @@
 	}
 	.preview-btn {
 		background-color: #3b82f6;
+		color: white;
+		border: none;
+		padding: 0.5rem 1rem;
+		border-radius: 4px;
+		cursor: pointer;
 	}
 	.export-btn {
 		background-color: #8b5cf6;
+		color: white;
+		border: none;
+		padding: 0.5rem 1rem;
+		border-radius: 4px;
+		cursor: pointer;
 	}
 	.pdf-preview-container {
 		background: white;
@@ -425,6 +592,12 @@
 		gap: 1rem;
 		margin-bottom: 1rem;
 	}
+	.loc-header input {
+		flex: 1;
+		font-size: 1.25rem;
+		font-weight: 600;
+		padding: 0.5rem;
+	}
 	.loc-grid {
 		display: grid;
 		grid-template-columns: 1fr 1fr auto;
@@ -432,12 +605,35 @@
 		align-items: end;
 		margin-bottom: 1rem;
 	}
+	.loc-grid label {
+		display: flex;
+		flex-direction: column;
+		font-size: 0.85rem;
+		color: #4b5563;
+		gap: 0.25rem;
+	}
+	.loc-grid input[type='text'],
+	.loc-grid input[type='number'] {
+		padding: 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+	}
+	.notes-textarea {
+		width: 100%;
+		box-sizing: border-box;
+		padding: 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		min-height: 60px;
+	}
 	.checkbox-label {
 		display: flex;
+		flex-direction: row !important;
 		align-items: center;
 		gap: 0.5rem;
 		cursor: pointer;
 		height: 100%;
+		padding-bottom: 0.5rem;
 	}
 	.photo-section {
 		margin-top: 1.5rem;
@@ -468,14 +664,33 @@
 		flex-direction: column;
 		gap: 0.5rem;
 	}
+	.photo-controls input,
+	.photo-controls select {
+		padding: 0.25rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+	}
 	.meta {
 		font-size: 0.75rem;
 		color: #6b7280;
+	}
+	.danger {
+		background-color: #ef4444;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		padding: 0.5rem 1rem;
+		cursor: pointer;
 	}
 	.add-loc-btn {
 		margin-top: 2rem;
 		width: 100%;
 		padding: 1rem;
 		font-size: 1.1rem;
+		background-color: #10b981;
+		color: white;
+		border: none;
+		border-radius: 8px;
+		cursor: pointer;
 	}
 </style>
