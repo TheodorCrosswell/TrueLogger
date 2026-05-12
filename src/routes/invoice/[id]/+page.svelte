@@ -6,6 +6,7 @@
 	import jsPDF from 'jspdf';
 	import autoTable from 'jspdf-autotable';
 	import exifr from 'exifr'; 
+	import imageCompression from 'browser-image-compression'; // <-- Added import
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -161,12 +162,10 @@
 		const defaultAngle = currentAngles[0] || 'Default Angle';
 
 		for (const file of input.files) {
-			const dataUrl = await fileToDataUrl(file);
-			
 			// Fallback to lastModified/Date.now()
 			let timestamp = file.lastModified || Date.now();
 			
-			// Extract exact photo taken time from EXIF to fix the Android issue
+			// Extract exact photo taken time from EXIF BEFORE compression strips it
 			try {
 				const exifData = await exifr.parse(file, { pick: ['DateTimeOriginal'] });
 				if (exifData?.DateTimeOriginal) {
@@ -176,21 +175,38 @@
 				console.warn('Could not read EXIF data', err);
 			}
 
-			const newPhoto: Photo = {
-				invoiceId: invoice.id!,
-				locationId,
-				angle: defaultAngle,
-				type: 'before',
-				dataUrl,
-				timestamp
-			};
-			const photoId = await db.photos.add(newPhoto);
-			photos = [...photos, { ...newPhoto, id: photoId }];
+			try {
+				// --- Apply Browser Image Compression ---
+				// This also automatically corrects EXIF orientation issues
+				const options = {
+					maxSizeMB: 1,
+					maxWidthOrHeight: 1920,
+					useWebWorker: true,
+					fileType: 'image/jpeg'
+				};
+				const compressedFile = await imageCompression(file, options);
+				
+				const dataUrl = await fileToDataUrl(compressedFile);
+
+				const newPhoto: Photo = {
+					invoiceId: invoice.id!,
+					locationId,
+					angle: defaultAngle,
+					type: 'before',
+					dataUrl,
+					timestamp
+				};
+				const photoId = await db.photos.add(newPhoto);
+				photos = [...photos, { ...newPhoto, id: photoId }];
+			} catch (error) {
+				console.error('Error compressing image:', error);
+			}
 		}
 		input.value = ''; // clear input
 	}
 
-	function fileToDataUrl(file: File): Promise<string> {
+	// Updated to accept Blob (browser-image-compression outputs a Blob/File)
+	function fileToDataUrl(file: File | Blob): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => resolve(reader.result as string);
