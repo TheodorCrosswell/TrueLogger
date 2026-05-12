@@ -45,21 +45,29 @@
 	);
 
 	onMount(async () => {
+		// Attempt to fetch the invoice
 		invoice = await db.invoices.get(data.id);
-		if (invoice) {
-			// Migrate legacy global invoice angles to individual locations if they don't have any
-			const globalAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
-			invoice.locations = invoice.locations.map(loc => {
-				if (!loc.angles) {
-					loc.angles = [...globalAngles];
-				}
-				return loc;
-			});
+		
+		// If the invoice ID is invalid/doesn't exist, redirect to home
+		if (!invoice) {
+			goto(resolve('/'));
+			return; // Stop execution
 		}
+
+		// Migrate legacy global invoice angles to individual locations if they don't have any
+		const globalAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+		invoice.locations = invoice.locations.map(loc => {
+			if (!loc.angles) {
+				loc.angles = [...globalAngles];
+			}
+			return loc;
+		});
+		
+		// Fetch photos and render the page
 		photos = await db.photos.where('invoiceId').equals(data.id).toArray();
 		isLoaded = true;
 	});
-
+	
 	// Cleanup memory leaks from Object URLs
 	onDestroy(() => {
 		if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
