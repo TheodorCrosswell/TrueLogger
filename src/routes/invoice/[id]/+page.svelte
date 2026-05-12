@@ -179,8 +179,9 @@
 				// --- Apply Browser Image Compression ---
 				// This also automatically corrects EXIF orientation issues
 				const options = {
-					maxSizeMB: 1,
-					maxWidthOrHeight: 1920,
+					maxSizeMB: 0.15,
+					maxWidthOrHeight: 1024,
+					initialQuality: 0.7,
 					useWebWorker: true,
 					fileType: 'image/jpeg'
 				};
@@ -234,7 +235,7 @@
 	
 	function generatePDF(action: 'download' | 'preview') {
 		if (!invoice) return;
-		const doc = new jsPDF();
+		const doc = new jsPDF({ compress: true });
 		const pageWidth = doc.internal.pageSize.width;
 		const pageHeight = doc.internal.pageSize.height;
 
@@ -376,7 +377,7 @@
 				
 				const props = doc.getImageProperties(photo.dataUrl);
 				const { w, h } = fitImage(props, 190, 245);
-				doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h);
+				doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h, undefined, 'FAST');
 			}
 		} else if (photoLayout === '2') {
 			// 2 Photos per page (1 Pair Stacked)
@@ -392,7 +393,7 @@
 					
 					const props = doc.getImageProperties(pair.before.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
-					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h);
+					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h, undefined, 'FAST');
 				}
 
 				if (pair.after) {
@@ -402,7 +403,7 @@
 
 					const props = doc.getImageProperties(pair.after.dataUrl);
 					const { w, h } = fitImage(props, 190, 110);
-					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h);
+					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h, undefined, 'FAST');
 				}
 			}
 		} else if (photoLayout === '6') {
@@ -425,7 +426,7 @@
 
 						const props = doc.getImageProperties(pair.before.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
-						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h);
+						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h, undefined, 'FAST');
 					}
 
 					if (pair.after) {
@@ -435,7 +436,7 @@
 
 						const props = doc.getImageProperties(pair.after.dataUrl);
 						const { w, h } = fitImage(props, 90, 70);
-						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h);
+						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h, undefined, 'FAST');
 					}
 				});
 			}
