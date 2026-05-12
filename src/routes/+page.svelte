@@ -22,17 +22,22 @@
 	}
 
 	async function reuseInvoice(oldInvoice: Invoice) {
+		// 1. Unwrap Svelte 5 Proxies using $state.snapshot() so IndexedDB can safely clone it
+		const plainInvoice = $state.snapshot(oldInvoice);
+
 		// Duplicates invoice structure but resets status and notes
-		const newLocations = oldInvoice.locations.map((loc) => ({
+		const newLocations = plainInvoice.locations.map((loc) => ({
 			...loc,
 			serviced: false,
 			notes: ''
 		}));
+		
 		const id = await db.invoices.add({
 			title: `Invoice - ${new Date().toLocaleDateString()}`,
 			createdAt: Date.now(),
 			locations: newLocations
 		});
+		
 		goto(resolve(`/invoice/${id}`));
 	}
 
