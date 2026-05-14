@@ -6,22 +6,13 @@
 	import jsPDF from 'jspdf';
 	import autoTable from 'jspdf-autotable';
 	import exifr from 'exifr'; 
-	import imageCompression from 'browser-image-compression'; // <-- Added import
+	import imageCompression from 'browser-image-compression';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	let invoice = $state<
-		| (Invoice & {
-				contractorName?: string;
-				contractorAddress?: string;
-				customerName?: string;
-				customerAddress?: string;
-				invoiceDate?: string;
-				invoiceNumber?: string;
-		  })
-		| undefined
-	>(undefined);
+	// Simplified: No longer needs an intersection type because the fields are now in db.ts
+	let invoice = $state<Invoice | undefined>(undefined);
 
 	let photos = $state<Photo[]>([]);
 	let isLoaded = $state(false);

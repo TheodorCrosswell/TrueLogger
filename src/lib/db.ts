@@ -16,6 +16,14 @@ export interface Invoice {
 	createdAt: number;
 	locations: Location[];
 	angles?: string[]; // Preserved for legacy migrations
+	
+	// Added: Invoice Document Details
+	contractorName?: string;
+	contractorAddress?: string;
+	customerName?: string;
+	customerAddress?: string;
+	invoiceDate?: string;
+	invoiceNumber?: string;
 }
 
 export interface Photo {

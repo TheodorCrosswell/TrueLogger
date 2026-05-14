@@ -35,7 +35,12 @@
 		const id = await db.invoices.add({
 			title: `Invoice - ${new Date().toLocaleDateString()}`,
 			createdAt: Date.now(),
-			locations: newLocations
+			locations: newLocations,
+			// Copy Contractor & Customer Details
+			contractorName: plainInvoice.contractorName,
+			contractorAddress: plainInvoice.contractorAddress,
+			customerName: plainInvoice.customerName,
+			customerAddress: plainInvoice.customerAddress
 		});
 		
 		goto(resolve(`/invoice/${id}`));
