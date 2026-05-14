@@ -267,7 +267,7 @@
 			loc.service,
 			loc.serviced ? 'Yes' : 'No',
 			loc.notes,
-			`$${loc.cost.toFixed(2)}`
+			`$${(loc.serviced ? loc.cost : 0).toFixed(2)}`
 		]);
 
 		const total = invoice.locations.filter((l) => l.serviced).reduce((sum, l) => sum + l.cost, 0);
