@@ -262,8 +262,6 @@
 		}
 
 		// --- INVOICE TABLE ---
-		// jspdf-autotable handles generating new pages automatically if the length of rows exceeds 
-		// the bounds of the page.
 		const tableData = invoice.locations.map((loc) => [
 			loc.name,
 			loc.service,
@@ -282,7 +280,6 @@
 			body: tableData,
 			footStyles: { fillColor: [200, 200, 200] },
 			willDrawCell: (data) => {
-				// highlight total row
 				if (data.row.index === tableData.length - 1) {
 					data.cell.styles.fontStyle = 'bold';
 				}
@@ -290,18 +287,13 @@
 		});
 
 		// --- INVOICE FOOTER ---
-
-		// Extract the Y position immediately after the table ends (on whichever page it ends on)
 		let finalY = (doc as jsPDFWithAutoTable).lastAutoTable?.finalY || 85;
 
-		// If the generated table ends too close to the bottom of the document, 
-		// explicitly add a page so the footer doesn't fall off the screen
 		if (finalY > pageHeight - 40) {
 			doc.addPage();
-			finalY = 20; // reset drawing pointer to top of new page
+			finalY = 20; 
 		}
 
-		// Bottom: Payable to Check Notice
 		doc.setFontSize(12);
 		doc.text(
 			`Make all checks payable to ${invoice.contractorName || 'Contractor'}`,
@@ -309,7 +301,6 @@
 			finalY + 15
 		);
 
-		// Footer: Thank you text
 		doc.setFontSize(14);
 		doc.text('THANK YOU FOR YOUR BUSINESS', pageWidth / 2, pageHeight - 15, { align: 'center' });
 
@@ -331,114 +322,122 @@
 			return { w, h };
 		};
 
-		// Helper struct to construct matched pairs for 2-per-page and 6-per-page logic
-		const pairs: { locationName: string; angle: string; before?: Photo; after?: Photo }[] = [];
+		if (photoLayout !== 'none') {
+			// Iterate per location to strictly isolate photos to specific pages
+			for (const loc of invoice.locations) {
+				// sortedPhotos natively orders by Angle -> Before/After -> Timestamp
+				const locPhotos = sortedPhotos.filter((p) => p.locationId === loc.id);
+				if (locPhotos.length === 0) continue;
 
-		if (photoLayout === '2' || photoLayout === '6') {
-			const grouped: Record<string, Photo[]> = {};
-			for (const p of sortedPhotos) {
-				const key = `${p.locationId}::${p.angle}`;
-				if (!grouped[key]) grouped[key] = [];
-				grouped[key].push(p);
-			}
+				if (photoLayout === '1') {
+					// 1 Photo per page
+					for (const photo of locPhotos) {
+						doc.addPage();
+						doc.setFontSize(14);
+						doc.text(`${loc.name} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
+						
+						if (showTimestampsOnPdf) {
+							doc.setFontSize(10);
+							doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
+						}
+						
+						const props = doc.getImageProperties(photo.dataUrl);
+						const { w, h } = fitImage(props, 190, 245);
+						doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h, undefined, 'FAST');
+					}
+				} else if (photoLayout === '2' || photoLayout === '6') {
+					// Helper struct to construct matched pairs specifically for THIS location
+					const pairs: { locationName: string; angle: string; before?: Photo; after?: Photo }[] = [];
+					const grouped: Record<string, Photo[]> = {};
 
-			for (const [key, photosInGroup] of Object.entries(grouped)) {
-				const [locId, angle] = key.split('::');
-				const locName = invoice.locations.find((l) => l.id === locId)?.name || 'Unknown';
+					for (const p of locPhotos) {
+						if (!grouped[p.angle]) grouped[p.angle] = [];
+						grouped[p.angle].push(p);
+					}
 
-				const befores = photosInGroup.filter((p) => p.type === 'before');
-				const afters = photosInGroup.filter((p) => p.type === 'after');
+					// Extract exact angles mapped inside this location in their pre-sorted order
+					const orderedAngles = Array.from(new Set(locPhotos.map(p => p.angle)));
 
-				const maxLen = Math.max(befores.length, afters.length);
-				for (let i = 0; i < maxLen; i++) {
-					pairs.push({
-						locationName: locName,
-						angle,
-						before: befores[i],
-						after: afters[i]
-					});
-				}
-			}
-		}
+					for (const angle of orderedAngles) {
+						const photosInGroup = grouped[angle];
+						const befores = photosInGroup.filter((p) => p.type === 'before');
+						const afters = photosInGroup.filter((p) => p.type === 'after');
 
-		if (photoLayout === '1') {
-			// 1 Photo per page
-			for (const photo of sortedPhotos) {
-				doc.addPage();
-				const locName = invoice.locations.find((l) => l.id === photo.locationId)?.name || 'Unknown';
-				doc.setFontSize(14);
-				doc.text(`${locName} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
-				
-				// Conditionally add Timestamp
-				if (showTimestampsOnPdf) {
-					doc.setFontSize(10);
-					doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
-				}
-				
-				const props = doc.getImageProperties(photo.dataUrl);
-				const { w, h } = fitImage(props, 190, 245);
-				doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h, undefined, 'FAST');
-			}
-		} else if (photoLayout === '2') {
-			// 2 Photos per page (1 Pair Stacked)
-			for (const pair of pairs) {
-				doc.addPage();
-				doc.setFontSize(14);
-				doc.text(`${pair.locationName} - ${pair.angle}`, 10, 20);
+						const maxLen = Math.max(befores.length, afters.length);
+						for (let i = 0; i < maxLen; i++) {
+							pairs.push({
+								locationName: loc.name,
+								angle,
+								before: befores[i],
+								after: afters[i]
+							});
+						}
+					}
 
-				if (pair.before) {
-					doc.setFontSize(12);
-					const label = showTimestampsOnPdf ? `Before: ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
-					doc.text(label, 10, 30);
+					// Safely chunk the pairs inside this location loop. The loop forces the next 
+					// location's pairs to trigger `doc.addPage()` entirely isolated from these chunks.
+					const chunkSize = photoLayout === '2' ? 1 : 3;
 					
-					const props = doc.getImageProperties(pair.before.dataUrl);
-					const { w, h } = fitImage(props, 190, 110);
-					doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h, undefined, 'FAST');
-				}
+					for (let i = 0; i < pairs.length; i += chunkSize) {
+						const chunk = pairs.slice(i, i + chunkSize);
+						doc.addPage();
+						
+						if (photoLayout === '2') {
+							const pair = chunk[0];
+							doc.setFontSize(14);
+							doc.text(`${pair.locationName} - ${pair.angle}`, 10, 20);
 
-				if (pair.after) {
-					doc.setFontSize(12);
-					const label = showTimestampsOnPdf ? `After: ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
-					doc.text(label, 10, 155);
+							if (pair.before) {
+								doc.setFontSize(12);
+								const label = showTimestampsOnPdf ? `Before: ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+								doc.text(label, 10, 30);
+								
+								const props = doc.getImageProperties(pair.before.dataUrl);
+								const { w, h } = fitImage(props, 190, 110);
+								doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h, undefined, 'FAST');
+							}
 
-					const props = doc.getImageProperties(pair.after.dataUrl);
-					const { w, h } = fitImage(props, 190, 110);
-					doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h, undefined, 'FAST');
-				}
-			}
-		} else if (photoLayout === '6') {
-			// 6 Photos per page (3 Pairs Side-by-Side)
-			for (let i = 0; i < pairs.length; i += 3) {
-				const chunk = pairs.slice(i, i + 3);
-				doc.addPage();
-				doc.setFontSize(14);
-				doc.text('Photos', 10, 15);
+							if (pair.after) {
+								doc.setFontSize(12);
+								const label = showTimestampsOnPdf ? `After: ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+								doc.text(label, 10, 155);
 
-				chunk.forEach((pair, index) => {
-					const rowY = 25 + index * 90;
-					doc.setFontSize(12);
-					doc.text(`${pair.locationName} - ${pair.angle}`, 10, rowY);
+								const props = doc.getImageProperties(pair.after.dataUrl);
+								const { w, h } = fitImage(props, 190, 110);
+								doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h, undefined, 'FAST');
+							}
+						} else if (photoLayout === '6') {
+							doc.setFontSize(14);
+							doc.text(`Photos - ${loc.name}`, 10, 15);
 
-					if (pair.before) {
-						doc.setFontSize(10);
-						const label = showTimestampsOnPdf ? `Before - ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
-						doc.text(label, 10, rowY + 6);
+							chunk.forEach((pair, index) => {
+								const rowY = 25 + index * 90;
+								doc.setFontSize(12);
+								doc.text(`${pair.locationName} - ${pair.angle}`, 10, rowY);
 
-						const props = doc.getImageProperties(pair.before.dataUrl);
-						const { w, h } = fitImage(props, 90, 70);
-						doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h, undefined, 'FAST');
+								if (pair.before) {
+									doc.setFontSize(10);
+									const label = showTimestampsOnPdf ? `Before - ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+									doc.text(label, 10, rowY + 6);
+
+									const props = doc.getImageProperties(pair.before.dataUrl);
+									const { w, h } = fitImage(props, 90, 70);
+									doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h, undefined, 'FAST');
+								}
+
+								if (pair.after) {
+									doc.setFontSize(10);
+									const label = showTimestampsOnPdf ? `After - ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+									doc.text(label, 110, rowY + 6);
+
+									const props = doc.getImageProperties(pair.after.dataUrl);
+									const { w, h } = fitImage(props, 90, 70);
+									doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h, undefined, 'FAST');
+								}
+							});
+						}
 					}
-
-					if (pair.after) {
-						doc.setFontSize(10);
-						const label = showTimestampsOnPdf ? `After - ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
-						doc.text(label, 110, rowY + 6);
-
-						const props = doc.getImageProperties(pair.after.dataUrl);
-						const { w, h } = fitImage(props, 90, 70);
-						doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h, undefined, 'FAST');
-					}
-				});
+				}
 			}
 		}
 
