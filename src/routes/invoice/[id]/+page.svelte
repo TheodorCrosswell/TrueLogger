@@ -148,10 +148,6 @@
 		const input = event.target as HTMLInputElement;
 		if (!input.files || !invoice) return;
 
-		const loc = invoice.locations.find((l) => l.id === locationId);
-		const currentAngles = loc?.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
-		const defaultAngle = currentAngles[0] || 'Default Angle';
-
 		for (const file of input.files) {
 			// Fallback to lastModified/Date.now()
 			let timestamp = file.lastModified || Date.now();
@@ -183,8 +179,8 @@
 				const newPhoto: Photo = {
 					invoiceId: invoice.id!,
 					locationId,
-					angle: defaultAngle,
-					type: 'before',
+					angle: 'Unknown',
+					type: 'other',
 					dataUrl,
 					timestamp
 				};
@@ -609,7 +605,7 @@
 									<div class="photo-controls">
 										<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
 										<select
-											value={(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other'}
+											value={photo.angle === 'Unknown' ? 'Unknown' : ((loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other')}
 											onchange={(e) => {
 												const val = (e.target as HTMLSelectElement).value;
 												if (val !== 'other') {
@@ -621,6 +617,7 @@
 												}
 											}}
 										>
+											<option value="Unknown">Unknown Angle</option>
 											{#each loc.angles || ['Front', 'Back', 'Left Side', 'Right Side'] as angleOption (angleOption)}
 												<option value={angleOption}>{angleOption}</option>
 											{/each}
@@ -628,7 +625,7 @@
 										</select>
 
 										<!-- Display text input field when custom "Other" angle has been selected -->
-										{#if !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
+										{#if photo.angle !== 'Unknown' && !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
 											<input
 												type="text"
 												bind:value={photo.angle}
@@ -638,6 +635,7 @@
 										{/if}
 
 										<select bind:value={photo.type} onchange={() => updatePhoto(photo)}>
+											<option value="other">Other</option>
 											<option value="before">Before</option>
 											<option value="after">After</option>
 										</select>

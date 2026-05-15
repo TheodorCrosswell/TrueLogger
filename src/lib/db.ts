@@ -31,7 +31,7 @@ export interface Photo {
 	invoiceId: number;
 	locationId: string;
 	angle: string;
-	type: 'before' | 'after';
+	type: 'before' | 'after' | 'other';
 	dataUrl: string;
 	timestamp: number;
 }
