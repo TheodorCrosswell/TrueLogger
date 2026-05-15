@@ -262,6 +262,8 @@
 		}
 
 		// --- INVOICE TABLE ---
+		// jspdf-autotable handles generating new pages automatically if the length of rows exceeds 
+		// the bounds of the page.
 		const tableData = invoice.locations.map((loc) => [
 			loc.name,
 			loc.service,
@@ -289,8 +291,15 @@
 
 		// --- INVOICE FOOTER ---
 
-		// Extract the Y position immediately after the table ends
-		const finalY = (doc as jsPDFWithAutoTable).lastAutoTable?.finalY || 85;
+		// Extract the Y position immediately after the table ends (on whichever page it ends on)
+		let finalY = (doc as jsPDFWithAutoTable).lastAutoTable?.finalY || 85;
+
+		// If the generated table ends too close to the bottom of the document, 
+		// explicitly add a page so the footer doesn't fall off the screen
+		if (finalY > pageHeight - 40) {
+			doc.addPage();
+			finalY = 20; // reset drawing pointer to top of new page
+		}
 
 		// Bottom: Payable to Check Notice
 		doc.setFontSize(12);
@@ -432,6 +441,16 @@
 				});
 			}
 		}
+
+		// --- PAGE NUMBERS ---
+		const totalPages = doc.getNumberOfPages();
+		for (let i = 1; i <= totalPages; i++) {
+			doc.setPage(i);
+			doc.setFontSize(10);
+			doc.setTextColor(150); // Set to lighter grey color
+			doc.text(`Page ${i} of ${totalPages}`, pageWidth - 14, pageHeight - 10, { align: 'right' });
+		}
+		doc.setTextColor(0); // Reset text color
 
 		if (action === 'download') {
 			doc.save(`${invoice.title}.pdf`);
