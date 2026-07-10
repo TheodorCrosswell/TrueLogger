@@ -27,17 +27,20 @@
 	let photoErrors = $state<Record<number, boolean>>({});
 	let sortMessages = $state<Record<string, {text: string, type: 'success' | 'error'}>>({});
 
+	// CV Clustering State
+	let isClustering = $state(false);
+	let showGroupingModal = $state(false);
+	let angleGroups = $state<{ photos: Photo[]; selectedAngle: string; customAngle?: string }[]>([]);
+	let clusteringLocationId = $state<string | null>(null);
+
 	onMount(async () => {
-		// Attempt to fetch the invoice
 		invoice = await db.invoices.get(data.id);
 		
-		// If the invoice ID is invalid/doesn't exist, redirect to home
 		if (!invoice) {
 			goto(resolve('/'));
 			return; 
 		}
 
-		// Migrate legacy global invoice angles to individual locations if they don't have any
 		const globalAngles = invoice.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
 		invoice.locations = invoice.locations.map(loc => {
 			if (!loc.angles) {
@@ -46,7 +49,6 @@
 			return loc;
 		});
 		
-		// Fetch photos and render the page
 		photos = await db.photos.where('invoiceId').equals(data.id).toArray();
 		isLoaded = true;
 	});
@@ -62,10 +64,148 @@
 		}
 	});
 
-async function sortAndAssign(locationId: string) {
+	// --- LIGHTWEIGHT COMPUTER VISION (dHash Algorithm) ---
+	function getDHash(dataUrl: string): Promise<string> {
+		return new Promise((resolve, reject) => {
+			const img = new Image();
+			img.onload = () => {
+				const canvas = document.createElement('canvas');
+				canvas.width = 9;
+				canvas.height = 8;
+				const ctx = canvas.getContext('2d');
+				if (!ctx) return resolve('0'.repeat(64));
+				
+				ctx.drawImage(img, 0, 0, 9, 8);
+				const data = ctx.getImageData(0, 0, 9, 8).data;
+				let hash = '';
+				
+				for (let y = 0; y < 8; y++) {
+					for (let x = 0; x < 8; x++) {
+						const idx1 = (y * 9 + x) * 4;
+						const idx2 = (y * 9 + (x + 1)) * 4;
+						// Grayscale conversion
+						const g1 = data[idx1] * 0.299 + data[idx1 + 1] * 0.587 + data[idx1 + 2] * 0.114;
+						const g2 = data[idx2] * 0.299 + data[idx2 + 1] * 0.587 + data[idx2 + 2] * 0.114;
+						hash += g1 > g2 ? '1' : '0';
+					}
+				}
+				resolve(hash);
+			};
+			img.onerror = reject;
+			img.src = dataUrl;
+		});
+	}
+
+	function hammingDistance(hash1: string, hash2: string): number {
+		let dist = 0;
+		for (let i = 0; i < Math.min(hash1.length, hash2.length); i++) {
+			if (hash1[i] !== hash2[i]) dist++;
+		}
+		return dist + Math.abs(hash1.length - hash2.length);
+	}
+
+	async function autoDetectAngles(locationId: string) {
+		const locPhotos = photos.filter((p) => p.locationId === locationId);
+		if (locPhotos.length === 0) return;
+
+		isClustering = true;
+		clusteringLocationId = locationId;
+
+		try {
+			// 1. Generate hashes for all photos in the background
+			const photoHashes = await Promise.all(
+				locPhotos.map(async (photo) => ({
+					photo,
+					hash: await getDHash(photo.dataUrl)
+				}))
+			);
+
+			// 2. Cluster them by visual similarity
+			const clusters: { baseHash: string; photos: Photo[] }[] = [];
+			const THRESHOLD = 15; // Max bit differences allowed (out of 64)
+
+			for (const item of photoHashes) {
+				let matchedCluster = null;
+				for (const cluster of clusters) {
+					if (hammingDistance(item.hash, cluster.baseHash) <= THRESHOLD) {
+						matchedCluster = cluster;
+						break;
+					}
+				}
+				if (matchedCluster) {
+					matchedCluster.photos.push(item.photo);
+				} else {
+					clusters.push({ baseHash: item.hash, photos: [item.photo] });
+				}
+			}
+
+			// 3. Prepare State for the Modal
+			const locationAngles = invoice?.locations.find((l) => l.id === locationId)?.angles || ['Front', 'Back', 'Left Side', 'Right Side'];
+
+			angleGroups = clusters.map((c) => {
+				const existingAngles = c.photos.map(p => p.angle).filter(a => a && a !== 'Unknown');
+				const predominant = existingAngles.length > 0 ? existingAngles[0] : 'Unknown';
+				
+				let selectedAngle = predominant;
+				let customAngle = '';
+				
+				if (predominant !== 'Unknown' && !locationAngles.includes(predominant)) {
+					selectedAngle = 'other';
+					customAngle = predominant;
+				}
+
+				return {
+					photos: c.photos,
+					selectedAngle,
+					customAngle
+				};
+			});
+
+			showGroupingModal = true;
+		} catch (err) {
+			console.error('Error clustering photos:', err);
+		} finally {
+			isClustering = false;
+		}
+	}
+
+	function closeModal() {
+		showGroupingModal = false;
+		clusteringLocationId = null;
+		angleGroups = [];
+	}
+
+	async function saveAssignments() {
+		if (!clusteringLocationId) return;
+
+		let needsUpdate = false;
+		for (const group of angleGroups) {
+			const finalAngle = group.selectedAngle === 'other' ? (group.customAngle || 'Custom Angle') : group.selectedAngle;
+
+			if (finalAngle !== 'Unknown') {
+				for (const photo of group.photos) {
+					photo.angle = finalAngle;
+					await db.photos.put($state.snapshot(photo));
+
+					const idx = photos.findIndex((p) => p.id === photo.id);
+					if (idx !== -1) photos[idx] = photo;
+					needsUpdate = true;
+				}
+			}
+		}
+
+		if (needsUpdate) {
+			// Trigger the existing Auto-Sort sequence right after applying to group Before & Afters
+			await sortAndAssign(clusteringLocationId);
+		}
+
+		closeModal();
+	}
+	// -------------------------------------------------------------
+
+	async function sortAndAssign(locationId: string) {
 		const locPhotos = photos.filter(p => p.locationId === locationId);
 		
-		// Group strictly by assigned angle
 		const grouped: Record<string, Photo[]> = {};
 		for (const p of locPhotos) {
 			const angle = p.angle || 'Unknown';
@@ -76,14 +216,11 @@ async function sortAndAssign(locationId: string) {
 		let errorCount = 0;
 		const photosToUpdate: Photo[] = [];
 
-		// Clear out old UI errors for this location
 		for (const p of locPhotos) {
 			if (p.id) delete photoErrors[p.id];
 		}
 
-		// FIXED: Iterate over values to remove the unused 'angle' key assignment
 		for (const group of Object.values(grouped)) {
-			// If it's a perfect pair, safely assume they are before/after ordered by time
 			if (group.length === 2) {
 				group.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 				
@@ -96,7 +233,6 @@ async function sortAndAssign(locationId: string) {
 					photosToUpdate.push(group[1]);
 				}
 			} else {
-				// Flag any single orphaned photos or angles exceeding a simple pair (3+ photos)
 				group.forEach(p => {
 					if (p.id) {
 						photoErrors[p.id] = true;
@@ -106,21 +242,18 @@ async function sortAndAssign(locationId: string) {
 			}
 		}
 
-		// Save the auto-assigned types back to the database safely
 		if (photosToUpdate.length > 0) {
 			for (const p of photosToUpdate) {
 				await db.photos.put($state.snapshot(p));
 			}
 		}
 
-		// Update UI Success/Error indicators
 		if (errorCount > 0) {
 			sortMessages[locationId] = { text: `Found ${errorCount} error(s)`, type: 'error' };
 		} else {
 			sortMessages[locationId] = { text: 'Sorted successfully', type: 'success' };
 		}
 
-		// Finally execute the sorting standard globally on the main array for visual flow
 		photos = [...photos].sort((a, b) => {
 			const angleA = (a.angle || '').toLowerCase();
 			const angleB = (b.angle || '').toLowerCase();
@@ -234,7 +367,6 @@ async function sortAndAssign(locationId: string) {
 				const photoId = await db.photos.add(newPhoto);
 				photos = [...photos, { ...newPhoto, id: photoId }];
 				
-				// Clear message forcing a re-sort upon new uploads
 				delete sortMessages[locationId];
 			} catch (error) {
 				console.error('Error compressing image:', error);
@@ -256,7 +388,6 @@ async function sortAndAssign(locationId: string) {
 		await db.photos.put($state.snapshot(photo));
 		photos = photos.map((p) => (p.id === photo.id ? photo : p));
 		
-		// Remove error state automatically when user makes an adjustment to a photo
 		if (photo.id && photoErrors[photo.id]) {
 			delete photoErrors[photo.id];
 		}
@@ -289,16 +420,13 @@ async function sortAndAssign(locationId: string) {
 		// --- INVOICE HEADER ---
 		doc.setFontSize(20);
 		doc.text(invoice.contractorName || 'Contractor Name', 14, 22);
-
 		doc.setFontSize(24);
 		doc.text('INVOICE', pageWidth - 14, 22, { align: 'right' });
-
 		doc.setFontSize(10);
 		if (invoice.contractorAddress) {
 			const splitContractorAddress = doc.splitTextToSize(invoice.contractorAddress, 80);
 			doc.text(splitContractorAddress, 14, 30);
 		}
-
 		doc.text(`Date: ${invoice.invoiceDate || ''}`, pageWidth - 14, 30, { align: 'right' });
 		doc.text(`Invoice #: ${invoice.invoiceNumber || ''}`, pageWidth - 14, 35, { align: 'right' });
 
@@ -321,7 +449,6 @@ async function sortAndAssign(locationId: string) {
 		]);
 
 		const total = invoice.locations.filter((l) => l.serviced).reduce((sum, l) => sum + l.cost, 0);
-
 		tableData.push(['', '', '', 'GRAND TOTAL:', `$${total.toFixed(2)}`]);
 
 		autoTable(doc, {
@@ -336,7 +463,6 @@ async function sortAndAssign(locationId: string) {
 			}
 		});
 
-		// --- INVOICE FOOTER ---
 		let finalY = (doc as jsPDFWithAutoTable).lastAutoTable?.finalY || 85;
 
 		if (finalY > pageHeight - 40) {
@@ -350,7 +476,6 @@ async function sortAndAssign(locationId: string) {
 			14,
 			finalY + 15
 		);
-
 		doc.setFontSize(14);
 		doc.text('THANK YOU FOR YOUR BUSINESS', pageWidth / 2, pageHeight - 15, { align: 'center' });
 
@@ -372,7 +497,6 @@ async function sortAndAssign(locationId: string) {
 
 		if (photoLayout !== 'none') {
 			for (const loc of invoice.locations) {
-				// We enforce sorting upon Generation to ensure PDF always structures identically visually
 				const locPhotos = [...photos]
 					.filter((p) => p.locationId === loc.id)
 					.sort((a, b) => {
@@ -668,6 +792,14 @@ async function sortAndAssign(locationId: string) {
 										{sortMessages[loc.id].text}
 									</span>
 								{/if}
+								<button 
+									type="button" 
+									class="detect-btn" 
+									onclick={() => autoDetectAngles(loc.id)} 
+									disabled={isClustering}
+								>
+									{isClustering && clusteringLocationId === loc.id ? 'Detecting...' : 'Auto-Detect Angles'}
+								</button>
 								<button type="button" class="sort-btn" onclick={() => sortAndAssign(loc.id)}>
 									Sort & Auto-Assign
 								</button>
@@ -696,7 +828,6 @@ async function sortAndAssign(locationId: string) {
 								<div class="photo-card {photoErrors[photo.id!] ? 'error-highlight' : ''}">
 									<img src={photo.dataUrl} alt="Lawn" />
 									<div class="photo-controls">
-										<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
 										<select
 											value={photo.angle === 'Unknown' ? 'Unknown' : ((loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle) ? photo.angle : 'other')}
 											onchange={(e) => {
@@ -717,7 +848,6 @@ async function sortAndAssign(locationId: string) {
 											<option value="other">Other...</option>
 										</select>
 
-										<!-- Display text input field when custom "Other" angle has been selected -->
 										{#if photo.angle !== 'Unknown' && !(loc.angles || ['Front', 'Back', 'Left Side', 'Right Side']).includes(photo.angle)}
 											<input
 												type="text"
@@ -745,6 +875,52 @@ async function sortAndAssign(locationId: string) {
 	</div>
 
 	<button class="add-loc-btn" onclick={addLocation}>+ Add Location</button>
+
+	<!-- Auto-Detect Angles Modal -->
+	{#if showGroupingModal && clusteringLocationId}
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="modal-overlay" onclick={closeModal}>
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div class="modal-content" onclick={(e) => e.stopPropagation()}>
+				<div class="modal-header">
+					<h3>Assign Auto-Detected Angles</h3>
+					<button class="danger" style="padding: 0.25rem 0.5rem" onclick={closeModal}>&times;</button>
+				</div>
+				<div class="modal-body">
+					{#each angleGroups as group, i (i)}
+						<div class="cluster-group">
+							<div class="cluster-header">
+								<strong>Group {i + 1}</strong> <span style="color:#6b7280; font-size: 0.9rem;">({group.photos.length} photos)</span>
+								
+								<select bind:value={group.selectedAngle}>
+									<option value="Unknown">Select Angle...</option>
+										{#each (invoice.locations.find(l => l.id === clusteringLocationId)?.angles || ['Front', 'Back', 'Left Side', 'Right Side']) as angleOption (angleOption)}
+											<option value={angleOption}>{angleOption}</option>
+										{/each}
+									<option value="other">Other...</option>
+								</select>
+
+								{#if group.selectedAngle === 'other'}
+									<input type="text" bind:value={group.customAngle} placeholder="Custom Angle Name" />
+								{/if}
+							</div>
+							<div class="cluster-thumbnails">
+								{#each group.photos as photo (photo.id)}
+									<img src={photo.dataUrl} alt="Thumbnail" />
+								{/each}
+							</div>
+						</div>
+					{/each}
+				</div>
+				<div class="modal-footer">
+					<button class="cancel-btn" onclick={closeModal}>Cancel</button>
+					<button class="save-btn" onclick={saveAssignments}>Save Assignments</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 {/if}
 
 <style>
@@ -1016,6 +1192,8 @@ async function sortAndAssign(locationId: string) {
 		align-items: center;
 		justify-content: space-between;
 		margin-bottom: 1rem;
+		flex-wrap: wrap;
+		gap: 1rem;
 	}
 	.photo-section-header h4 {
 		margin: 0;
@@ -1024,6 +1202,22 @@ async function sortAndAssign(locationId: string) {
 		display: flex;
 		align-items: center;
 		gap: 1rem;
+	}
+	.detect-btn {
+		background-color: #f59e0b;
+		color: white;
+		border: none;
+		padding: 0.5rem 1rem;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 0.9rem;
+	}
+	.detect-btn:hover:not(:disabled) {
+		background-color: #d97706;
+	}
+	.detect-btn:disabled {
+		opacity: 0.7;
+		cursor: not-allowed;
 	}
 	.sort-btn {
 		background-color: #3b82f6;
@@ -1103,5 +1297,107 @@ async function sortAndAssign(locationId: string) {
 		border: none;
 		border-radius: 8px;
 		cursor: pointer;
+	}
+
+	/* Clustering Modal Styles */
+	.modal-overlay {
+		position: fixed;
+		top: 0; left: 0; right: 0; bottom: 0;
+		background: rgba(0,0,0,0.6);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 1000;
+		padding: 1rem;
+	}
+	.modal-content {
+		background: white;
+		width: 100%;
+		max-width: 700px;
+		max-height: 90vh;
+		border-radius: 8px;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+	}
+	.modal-header {
+		padding: 1rem 1.5rem;
+		border-bottom: 1px solid #e5e7eb;
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+	}
+	.modal-header h3 {
+		margin: 0;
+		font-size: 1.25rem;
+		color: #111827;
+	}
+	.modal-body {
+		padding: 1.5rem;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+	}
+	.cluster-group {
+		border: 1px solid #d1d5db;
+		border-radius: 8px;
+		padding: 1rem;
+		background: #f9fafb;
+	}
+	.cluster-header {
+		display: flex;
+		gap: 1rem;
+		align-items: center;
+		margin-bottom: 1rem;
+		flex-wrap: wrap;
+	}
+	.cluster-header select, .cluster-header input {
+		padding: 0.5rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		font-size: 0.9rem;
+	}
+	.cluster-thumbnails {
+		display: flex;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+	}
+	.cluster-thumbnails img {
+		width: 100px;
+		height: 100px;
+		object-fit: cover;
+		border-radius: 6px;
+		border: 1px solid #e5e7eb;
+	}
+	.modal-footer {
+		padding: 1rem 1.5rem;
+		border-top: 1px solid #e5e7eb;
+		display: flex;
+		justify-content: flex-end;
+		gap: 1rem;
+	}
+	.cancel-btn {
+		padding: 0.5rem 1rem;
+		background: white;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		cursor: pointer;
+		font-weight: 500;
+	}
+	.cancel-btn:hover {
+		background: #f3f4f6;
+	}
+	.save-btn {
+		padding: 0.5rem 1rem;
+		background: #10b981;
+		color: white;
+		border: none;
+		border-radius: 4px;
+		cursor: pointer;
+		font-weight: 500;
+	}
+	.save-btn:hover {
+		background: #059669;
 	}
 </style>
