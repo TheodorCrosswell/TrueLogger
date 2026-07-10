@@ -11,9 +11,7 @@
 
 	let { data }: { data: PageData } = $props();
 
-	// Simplified: No longer needs an intersection type because the fields are now in db.ts
 	let invoice = $state<Invoice | undefined>(undefined);
-
 	let photos = $state<Photo[]>([]);
 	let isLoaded = $state(false);
 
@@ -25,19 +23,9 @@
 	let pdfPreviewUrl = $state<string | null>(null);
 	let showTimestampsOnPdf = $state(true); 
 
-	// Derived state groups photos natively by angle, then by before/after
-	// Bugfix: added fallback checks for .angle and .timestamp to prevent fatal errors
-	let sortedPhotos = $derived(
-		[...photos].sort((a, b) => {
-			const angleA = (a.angle || '').toLowerCase();
-			const angleB = (b.angle || '').toLowerCase();
-			if (angleA < angleB) return -1;
-			if (angleA > angleB) return 1;
-			if (a.type === 'before' && b.type === 'after') return -1;
-			if (a.type === 'after' && b.type === 'before') return 1;
-			return (a.timestamp || 0) - (b.timestamp || 0);
-		})
-	);
+	// Sort State tracking
+	let photoErrors = $state<Record<number, boolean>>({});
+	let sortMessages = $state<Record<string, {text: string, type: 'success' | 'error'}>>({});
 
 	onMount(async () => {
 		// Attempt to fetch the invoice
@@ -46,7 +34,7 @@
 		// If the invoice ID is invalid/doesn't exist, redirect to home
 		if (!invoice) {
 			goto(resolve('/'));
-			return; // Stop execution
+			return; 
 		}
 
 		// Migrate legacy global invoice angles to individual locations if they don't have any
@@ -63,18 +51,86 @@
 		isLoaded = true;
 	});
 	
-	// Cleanup memory leaks from Object URLs
 	onDestroy(() => {
 		if (pdfPreviewUrl) URL.revokeObjectURL(pdfPreviewUrl);
 	});
 
-	// Svelte 5 Rune Effect: Auto-save invoice to Dexie when modified
 	$effect(() => {
 		if (invoice && isLoaded) {
 			const snap = $state.snapshot(invoice);
 			db.invoices.put(snap);
 		}
 	});
+
+async function sortAndAssign(locationId: string) {
+		const locPhotos = photos.filter(p => p.locationId === locationId);
+		
+		// Group strictly by assigned angle
+		const grouped: Record<string, Photo[]> = {};
+		for (const p of locPhotos) {
+			const angle = p.angle || 'Unknown';
+			if (!grouped[angle]) grouped[angle] = [];
+			grouped[angle].push(p);
+		}
+
+		let errorCount = 0;
+		const photosToUpdate: Photo[] = [];
+
+		// Clear out old UI errors for this location
+		for (const p of locPhotos) {
+			if (p.id) delete photoErrors[p.id];
+		}
+
+		// FIXED: Iterate over values to remove the unused 'angle' key assignment
+		for (const group of Object.values(grouped)) {
+			// If it's a perfect pair, safely assume they are before/after ordered by time
+			if (group.length === 2) {
+				group.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+				
+				if (group[0].type !== 'before') {
+					group[0].type = 'before';
+					photosToUpdate.push(group[0]);
+				}
+				if (group[1].type !== 'after') {
+					group[1].type = 'after';
+					photosToUpdate.push(group[1]);
+				}
+			} else {
+				// Flag any single orphaned photos or angles exceeding a simple pair (3+ photos)
+				group.forEach(p => {
+					if (p.id) {
+						photoErrors[p.id] = true;
+						errorCount++;
+					}
+				});
+			}
+		}
+
+		// Save the auto-assigned types back to the database safely
+		if (photosToUpdate.length > 0) {
+			for (const p of photosToUpdate) {
+				await db.photos.put($state.snapshot(p));
+			}
+		}
+
+		// Update UI Success/Error indicators
+		if (errorCount > 0) {
+			sortMessages[locationId] = { text: `Found ${errorCount} error(s)`, type: 'error' };
+		} else {
+			sortMessages[locationId] = { text: 'Sorted successfully', type: 'success' };
+		}
+
+		// Finally execute the sorting standard globally on the main array for visual flow
+		photos = [...photos].sort((a, b) => {
+			const angleA = (a.angle || '').toLowerCase();
+			const angleB = (b.angle || '').toLowerCase();
+			if (angleA < angleB) return -1;
+			if (angleA > angleB) return 1;
+			if (a.type === 'before' && b.type === 'after') return -1;
+			if (a.type === 'after' && b.type === 'before') return 1;
+			return (a.timestamp || 0) - (b.timestamp || 0);
+		});
+	}
 
 	function toggleLocation(id: string) {
 		expandedLocations[id] = !expandedLocations[id];
@@ -95,28 +151,21 @@
 				angles: ['Front', 'Back', 'Left Side', 'Right Side']
 			}
 		];
-		// Auto-expand newly added locations so they can be immediately edited
 		expandedLocations[newId] = true;
 	}
 
 	async function removeLocation(id: string) {
 		if (!invoice) return;
 		
-		// 1. Remove the location from the invoice document
 		invoice.locations = invoice.locations.filter((l) => l.id !== id);
-
-		// Clean up UI expanded state
 		delete expandedLocations[id];
 
-		// 2. Find and delete all photos associated with this location
 		const photosToDelete = photos.filter((p) => p.locationId === id);
 		for (const photo of photosToDelete) {
 			if (photo.id) {
 				await db.photos.delete(photo.id);
 			}
 		}
-
-		// 3. Update the local photos state to remove them from the UI immediately
 		photos = photos.filter((p) => p.locationId !== id);
 	}
 
@@ -152,10 +201,8 @@
 		if (!input.files || !invoice) return;
 
 		for (const file of input.files) {
-			// Fallback to lastModified/Date.now()
 			let timestamp = file.lastModified || Date.now();
 			
-			// Extract exact photo taken time from EXIF BEFORE compression strips it
 			try {
 				const exifData = await exifr.parse(file, { pick: ['DateTimeOriginal'] });
 				if (exifData?.DateTimeOriginal) {
@@ -166,8 +213,6 @@
 			}
 
 			try {
-				// --- Apply Browser Image Compression ---
-				// This also automatically corrects EXIF orientation issues
 				const options = {
 					maxSizeMB: 0.15,
 					maxWidthOrHeight: 1024,
@@ -176,7 +221,6 @@
 					fileType: 'image/jpeg'
 				};
 				const compressedFile = await imageCompression(file, options);
-				
 				const dataUrl = await fileToDataUrl(compressedFile);
 
 				const newPhoto: Photo = {
@@ -189,14 +233,16 @@
 				};
 				const photoId = await db.photos.add(newPhoto);
 				photos = [...photos, { ...newPhoto, id: photoId }];
+				
+				// Clear message forcing a re-sort upon new uploads
+				delete sortMessages[locationId];
 			} catch (error) {
 				console.error('Error compressing image:', error);
 			}
 		}
-		input.value = ''; // clear input
+		input.value = ''; 
 	}
 
-	// Updated to accept Blob (browser-image-compression outputs a Blob/File)
 	function fileToDataUrl(file: File | Blob): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const reader = new FileReader();
@@ -208,13 +254,24 @@
 
 	async function updatePhoto(photo: Photo) {
 		await db.photos.put($state.snapshot(photo));
-		// Update array reference for reactivity
 		photos = photos.map((p) => (p.id === photo.id ? photo : p));
+		
+		// Remove error state automatically when user makes an adjustment to a photo
+		if (photo.id && photoErrors[photo.id]) {
+			delete photoErrors[photo.id];
+		}
+		if (photo.locationId) {
+			delete sortMessages[photo.locationId];
+		}
 	}
 
 	async function deletePhoto(id: number) {
+		const photoToDelete = photos.find(p => p.id === id);
 		await db.photos.delete(id);
 		photos = photos.filter((p) => p.id !== id);
+		
+		if (photoErrors[id]) delete photoErrors[id];
+		if (photoToDelete?.locationId) delete sortMessages[photoToDelete.locationId];
 	}
 
 	interface jsPDFWithAutoTable extends jsPDF {
@@ -230,27 +287,21 @@
 		const pageHeight = doc.internal.pageSize.height;
 
 		// --- INVOICE HEADER ---
-
-		// Top Left: Contractor Name
 		doc.setFontSize(20);
 		doc.text(invoice.contractorName || 'Contractor Name', 14, 22);
 
-		// Top Right: "INVOICE"
 		doc.setFontSize(24);
 		doc.text('INVOICE', pageWidth - 14, 22, { align: 'right' });
 
-		// Left side: Contractor Address
 		doc.setFontSize(10);
 		if (invoice.contractorAddress) {
 			const splitContractorAddress = doc.splitTextToSize(invoice.contractorAddress, 80);
 			doc.text(splitContractorAddress, 14, 30);
 		}
 
-		// Right side: Date and Invoice #
 		doc.text(`Date: ${invoice.invoiceDate || ''}`, pageWidth - 14, 30, { align: 'right' });
 		doc.text(`Invoice #: ${invoice.invoiceNumber || ''}`, pageWidth - 14, 35, { align: 'right' });
 
-		// Left side further down: Bill To Details
 		doc.setFontSize(12);
 		doc.text('Bill To:', 14, 55);
 		doc.setFontSize(10);
@@ -304,8 +355,6 @@
 		doc.text('THANK YOU FOR YOUR BUSINESS', pageWidth / 2, pageHeight - 15, { align: 'center' });
 
 		// --- PHOTOS LOGIC ---
-
-		// Helper to maintain image aspect ratio within boundaries
 		const fitImage = (
 			props: { width: number; height: number },
 			maxWidth: number,
@@ -322,14 +371,23 @@
 		};
 
 		if (photoLayout !== 'none') {
-			// Iterate per location to strictly isolate photos to specific pages
 			for (const loc of invoice.locations) {
-				// sortedPhotos natively orders by Angle -> Before/After -> Timestamp
-				const locPhotos = sortedPhotos.filter((p) => p.locationId === loc.id);
+				// We enforce sorting upon Generation to ensure PDF always structures identically visually
+				const locPhotos = [...photos]
+					.filter((p) => p.locationId === loc.id)
+					.sort((a, b) => {
+						const angleA = (a.angle || '').toLowerCase();
+						const angleB = (b.angle || '').toLowerCase();
+						if (angleA < angleB) return -1;
+						if (angleA > angleB) return 1;
+						if (a.type === 'before' && b.type === 'after') return -1;
+						if (a.type === 'after' && b.type === 'before') return 1;
+						return (a.timestamp || 0) - (b.timestamp || 0);
+					});
+
 				if (locPhotos.length === 0) continue;
 
 				if (photoLayout === '1') {
-					// 1 Photo per page
 					for (const photo of locPhotos) {
 						doc.addPage();
 						doc.setFontSize(14);
@@ -348,7 +406,6 @@
 						doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h, undefined, 'FAST');
 					}
 				} else if (photoLayout === '2' || photoLayout === '6') {
-					// Helper struct to construct matched pairs specifically for THIS location (safely handling 'Other' photos)
 					const pairs: { locationName: string; angle: string; photo1?: Photo; photo2?: Photo }[] = [];
 					const grouped: Record<string, Photo[]> = {};
 
@@ -358,7 +415,6 @@
 						grouped[angle].push(p);
 					}
 
-					// Extract exact angles mapped inside this location in their pre-sorted order
 					const orderedAngles = Array.from(new Set(locPhotos.map(p => p.angle || 'Unknown')));
 
 					for (const angle of orderedAngles) {
@@ -369,24 +425,16 @@
 
 						const maxLen = Math.max(befores.length, afters.length);
 						
-						// Step 1: Attempt to create standard Before/After matches
 						for (let i = 0; i < maxLen; i++) {
 							let p1: Photo | undefined = befores[i];
 							let p2: Photo | undefined = afters[i];
 							
-							// If a Before or After is missing, but we have 'Other' photos, use them to fill empty slots
 							if (!p1 && others.length > 0) p1 = others.shift();
 							if (!p2 && others.length > 0) p2 = others.shift();
 
-							pairs.push({
-								locationName: loc.name,
-								angle,
-								photo1: p1,
-								photo2: p2
-							});
+							pairs.push({ locationName: loc.name, angle, photo1: p1, photo2: p2 });
 						}
 
-						// Step 2: Any remaining 'Other' photos get paired together sequentially
 						for (let i = 0; i < others.length; i += 2) {
 							pairs.push({
 								locationName: loc.name,
@@ -397,8 +445,6 @@
 						}
 					}
 
-					// Safely chunk the pairs inside this location loop. The loop forces the next 
-					// location's pairs to trigger `doc.addPage()` entirely isolated from these chunks.
 					const chunkSize = photoLayout === '2' ? 1 : 3;
 					
 					for (let i = 0; i < pairs.length; i += chunkSize) {
@@ -477,10 +523,10 @@
 		for (let i = 1; i <= totalPages; i++) {
 			doc.setPage(i);
 			doc.setFontSize(10);
-			doc.setTextColor(150); // Set to lighter grey color
+			doc.setTextColor(150); 
 			doc.text(`Page ${i} of ${totalPages}`, pageWidth - 14, pageHeight - 10, { align: 'right' });
 		}
-		doc.setTextColor(0); // Reset text color
+		doc.setTextColor(0); 
 
 		if (action === 'download') {
 			doc.save(`${invoice.title}.pdf`);
@@ -490,7 +536,6 @@
 			pdfPreviewUrl = URL.createObjectURL(blob);
 		}
 	}
-
 </script>
 
 {#if !isLoaded}
@@ -614,7 +659,20 @@
 
 					<!-- Photo Management -->
 					<div class="photo-section">
-						<h4>Photos</h4>
+						
+						<div class="photo-section-header">
+							<h4>Photos</h4>
+							<div class="sort-controls">
+								{#if sortMessages[loc.id]}
+									<span class="sort-msg {sortMessages[loc.id].type}">
+										{sortMessages[loc.id].text}
+									</span>
+								{/if}
+								<button type="button" class="sort-btn" onclick={() => sortAndAssign(loc.id)}>
+									Sort & Auto-Assign
+								</button>
+							</div>
+						</div>
 
 						<!-- Angles Configuration Manager -->
 						<div class="angle-manager">
@@ -634,8 +692,8 @@
 						<input type="file" multiple accept="image/*" onchange={(e) => handleUpload(e, loc.id)} />
 
 						<div class="photo-grid">
-							{#each sortedPhotos.filter((p) => p.locationId === loc.id) as photo (photo.id)}
-								<div class="photo-card">
+							{#each photos.filter((p) => p.locationId === loc.id) as photo (photo.id)}
+								<div class="photo-card {photoErrors[photo.id!] ? 'error-highlight' : ''}">
 									<img src={photo.dataUrl} alt="Lawn" />
 									<div class="photo-controls">
 										<!-- Custom Angle Selection Dropdown with "Other" option fallback -->
@@ -952,6 +1010,46 @@
 		margin-top: 1.5rem;
 		padding-top: 1rem;
 		border-top: 1px solid #e5e7eb;
+	}
+	.photo-section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 1rem;
+	}
+	.photo-section-header h4 {
+		margin: 0;
+	}
+	.sort-controls {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+	}
+	.sort-btn {
+		background-color: #3b82f6;
+		color: white;
+		border: none;
+		padding: 0.5rem 1rem;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: 0.9rem;
+	}
+	.sort-btn:hover {
+		background-color: #2563eb;
+	}
+	.sort-msg.success {
+		color: #10b981;
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+	.sort-msg.error {
+		color: #ef4444;
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+	.error-highlight {
+		border: 2px solid #ef4444 !important;
+		box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
 	}
 	.photo-grid {
 		display: grid;
