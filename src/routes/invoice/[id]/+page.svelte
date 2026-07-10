@@ -1,3 +1,5 @@
+--- START OF FILE Paste July 10, 2026 - 11:47AM ---
+
 <script lang="ts">
 	import { db, type Invoice, type Photo } from '$lib/db';
 	import { onMount, onDestroy } from 'svelte';
@@ -33,6 +35,10 @@
 	let angleGroups = $state<{ photos: Photo[]; selectedAngle: string; customAngle?: string }[]>([]);
 	let clusteringLocationId = $state<string | null>(null);
 
+	// Auto-Detect Clustering Adjustable Settings
+	let similarityThreshold = $state(76); 
+	let resolutionScale = $state(8); 
+
 	onMount(async () => {
 		invoice = await db.invoices.get(data.id);
 		
@@ -65,24 +71,24 @@
 	});
 
 	// --- LIGHTWEIGHT COMPUTER VISION (dHash Algorithm) ---
-	function getDHash(dataUrl: string): Promise<string> {
+	function getDHash(dataUrl: string, scale: number = 8): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const img = new Image();
 			img.onload = () => {
 				const canvas = document.createElement('canvas');
-				canvas.width = 9;
-				canvas.height = 8;
+				canvas.width = scale + 1;
+				canvas.height = scale;
 				const ctx = canvas.getContext('2d');
-				if (!ctx) return resolve('0'.repeat(64));
+				if (!ctx) return resolve('0'.repeat(scale * scale));
 				
-				ctx.drawImage(img, 0, 0, 9, 8);
-				const data = ctx.getImageData(0, 0, 9, 8).data;
+				ctx.drawImage(img, 0, 0, scale + 1, scale);
+				const data = ctx.getImageData(0, 0, scale + 1, scale).data;
 				let hash = '';
 				
-				for (let y = 0; y < 8; y++) {
-					for (let x = 0; x < 8; x++) {
-						const idx1 = (y * 9 + x) * 4;
-						const idx2 = (y * 9 + (x + 1)) * 4;
+				for (let y = 0; y < scale; y++) {
+					for (let x = 0; x < scale; x++) {
+						const idx1 = (y * (scale + 1) + x) * 4;
+						const idx2 = (y * (scale + 1) + (x + 1)) * 4;
 						// Grayscale conversion
 						const g1 = data[idx1] * 0.299 + data[idx1 + 1] * 0.587 + data[idx1 + 2] * 0.114;
 						const g2 = data[idx2] * 0.299 + data[idx2 + 1] * 0.587 + data[idx2 + 2] * 0.114;
@@ -112,17 +118,22 @@
 		clusteringLocationId = locationId;
 
 		try {
-			// 1. Generate hashes for all photos in the background
+			const currentScale = Number(resolutionScale);
+			// 1. Generate hashes for all photos in the background based on resolution scale
 			const photoHashes = await Promise.all(
 				locPhotos.map(async (photo) => ({
 					photo,
-					hash: await getDHash(photo.dataUrl)
+					hash: await getDHash(photo.dataUrl, currentScale)
 				}))
 			);
 
 			// 2. Cluster them by visual similarity
 			const clusters: { baseHash: string; photos: Photo[] }[] = [];
-			const THRESHOLD = 15; // Max bit differences allowed (out of 64)
+			
+			// Total bits will be scale squared (e.g. 8x8 = 64 bits)
+			const hashLength = currentScale * currentScale;
+			// Allowable differing bits based on similarity percentage
+			const THRESHOLD = Math.floor(hashLength * (1 - (Number(similarityThreshold) / 100)));
 
 			for (const item of photoHashes) {
 				let matchedCluster = null;
@@ -785,7 +796,25 @@
 					<div class="photo-section">
 						
 						<div class="photo-section-header">
-							<h4>Photos</h4>
+							<div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+								<h4>Photos</h4>
+
+								<div class="detection-settings">
+									<label class="setting-label">
+										Detail Level:
+										<select bind:value={resolutionScale}>
+											<option value={8}>Low (8x8)</option>
+											<option value={16}>Medium (16x16)</option>
+											<option value={32}>High (32x32)</option>
+										</select>
+									</label>
+									<label class="setting-label">
+										Similarity Threshold: {similarityThreshold}%
+										<input type="range" min="50" max="100" bind:value={similarityThreshold} />
+									</label>
+								</div>
+							</div>
+
 							<div class="sort-controls">
 								{#if sortMessages[loc.id]}
 									<span class="sort-msg {sortMessages[loc.id].type}">
@@ -1198,6 +1227,36 @@
 	.photo-section-header h4 {
 		margin: 0;
 	}
+
+	/* Clustering Adjustable Settings CSS */
+	.detection-settings {
+		display: flex;
+		gap: 1.25rem;
+		align-items: center;
+		background: #f9fafb;
+		padding: 0.5rem 1rem;
+		border-radius: 6px;
+		border: 1px solid #e5e7eb;
+		font-size: 0.85rem;
+		flex-wrap: wrap;
+	}
+	.setting-label {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		color: #374151;
+		font-weight: 500;
+	}
+	.setting-label select {
+		padding: 0.25rem;
+		border: 1px solid #d1d5db;
+		border-radius: 4px;
+		font-size: 0.85rem;
+	}
+	.setting-label input[type="range"] {
+		width: 100px;
+	}
+
 	.sort-controls {
 		display: flex;
 		align-items: center;
