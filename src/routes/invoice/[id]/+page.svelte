@@ -26,13 +26,16 @@
 	let showTimestampsOnPdf = $state(true); 
 
 	// Derived state groups photos natively by angle, then by before/after
+	// Bugfix: added fallback checks for .angle and .timestamp to prevent fatal errors
 	let sortedPhotos = $derived(
 		[...photos].sort((a, b) => {
-			if (a.angle.toLowerCase() < b.angle.toLowerCase()) return -1;
-			if (a.angle.toLowerCase() > b.angle.toLowerCase()) return 1;
+			const angleA = (a.angle || '').toLowerCase();
+			const angleB = (b.angle || '').toLowerCase();
+			if (angleA < angleB) return -1;
+			if (angleA > angleB) return 1;
 			if (a.type === 'before' && b.type === 'after') return -1;
 			if (a.type === 'after' && b.type === 'before') return 1;
-			return a.timestamp - b.timestamp;
+			return (a.timestamp || 0) - (b.timestamp || 0);
 		})
 	);
 
@@ -330,11 +333,14 @@
 					for (const photo of locPhotos) {
 						doc.addPage();
 						doc.setFontSize(14);
-						doc.text(`${loc.name} - ${photo.angle} - ${photo.type.toUpperCase()}`, 10, 20);
+						const typeStr = (photo.type || 'other').toUpperCase();
+						const angleStr = photo.angle || 'Unknown';
+						doc.text(`${loc.name} - ${angleStr} - ${typeStr}`, 10, 20);
 						
 						if (showTimestampsOnPdf) {
 							doc.setFontSize(10);
-							doc.text(`Taken: ${new Date(photo.timestamp).toLocaleString()}`, 10, 26);
+							const timeStr = photo.timestamp ? new Date(photo.timestamp).toLocaleString() : 'Unknown';
+							doc.text(`Taken: ${timeStr}`, 10, 26);
 						}
 						
 						const props = doc.getImageProperties(photo.dataUrl);
@@ -342,30 +348,51 @@
 						doc.addImage(photo.dataUrl, props.fileType, 10, 30, w, h, undefined, 'FAST');
 					}
 				} else if (photoLayout === '2' || photoLayout === '6') {
-					// Helper struct to construct matched pairs specifically for THIS location
-					const pairs: { locationName: string; angle: string; before?: Photo; after?: Photo }[] = [];
+					// Helper struct to construct matched pairs specifically for THIS location (safely handling 'Other' photos)
+					const pairs: { locationName: string; angle: string; photo1?: Photo; photo2?: Photo }[] = [];
 					const grouped: Record<string, Photo[]> = {};
 
 					for (const p of locPhotos) {
-						if (!grouped[p.angle]) grouped[p.angle] = [];
-						grouped[p.angle].push(p);
+						const angle = p.angle || 'Unknown';
+						if (!grouped[angle]) grouped[angle] = [];
+						grouped[angle].push(p);
 					}
 
 					// Extract exact angles mapped inside this location in their pre-sorted order
-					const orderedAngles = Array.from(new Set(locPhotos.map(p => p.angle)));
+					const orderedAngles = Array.from(new Set(locPhotos.map(p => p.angle || 'Unknown')));
 
 					for (const angle of orderedAngles) {
 						const photosInGroup = grouped[angle];
 						const befores = photosInGroup.filter((p) => p.type === 'before');
 						const afters = photosInGroup.filter((p) => p.type === 'after');
+						const others = photosInGroup.filter((p) => p.type !== 'before' && p.type !== 'after');
 
 						const maxLen = Math.max(befores.length, afters.length);
+						
+						// Step 1: Attempt to create standard Before/After matches
 						for (let i = 0; i < maxLen; i++) {
+							let p1: Photo | undefined = befores[i];
+							let p2: Photo | undefined = afters[i];
+							
+							// If a Before or After is missing, but we have 'Other' photos, use them to fill empty slots
+							if (!p1 && others.length > 0) p1 = others.shift();
+							if (!p2 && others.length > 0) p2 = others.shift();
+
 							pairs.push({
 								locationName: loc.name,
 								angle,
-								before: befores[i],
-								after: afters[i]
+								photo1: p1,
+								photo2: p2
+							});
+						}
+
+						// Step 2: Any remaining 'Other' photos get paired together sequentially
+						for (let i = 0; i < others.length; i += 2) {
+							pairs.push({
+								locationName: loc.name,
+								angle,
+								photo1: others[i],
+								photo2: others[i + 1]
 							});
 						}
 					}
@@ -383,24 +410,28 @@
 							doc.setFontSize(14);
 							doc.text(`${pair.locationName} - ${pair.angle}`, 10, 20);
 
-							if (pair.before) {
+							if (pair.photo1) {
 								doc.setFontSize(12);
-								const label = showTimestampsOnPdf ? `Before: ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+								const typeStr = (pair.photo1.type || 'other').charAt(0).toUpperCase() + (pair.photo1.type || 'other').slice(1);
+								const timeStr = pair.photo1.timestamp ? new Date(pair.photo1.timestamp).toLocaleString() : 'Unknown';
+								const label = showTimestampsOnPdf ? `${typeStr}: ${timeStr}` : typeStr;
 								doc.text(label, 10, 30);
 								
-								const props = doc.getImageProperties(pair.before.dataUrl);
+								const props = doc.getImageProperties(pair.photo1.dataUrl);
 								const { w, h } = fitImage(props, 190, 110);
-								doc.addImage(pair.before.dataUrl, props.fileType, 10, 35, w, h, undefined, 'FAST');
+								doc.addImage(pair.photo1.dataUrl, props.fileType, 10, 35, w, h, undefined, 'FAST');
 							}
 
-							if (pair.after) {
+							if (pair.photo2) {
 								doc.setFontSize(12);
-								const label = showTimestampsOnPdf ? `After: ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+								const typeStr = (pair.photo2.type || 'other').charAt(0).toUpperCase() + (pair.photo2.type || 'other').slice(1);
+								const timeStr = pair.photo2.timestamp ? new Date(pair.photo2.timestamp).toLocaleString() : 'Unknown';
+								const label = showTimestampsOnPdf ? `${typeStr}: ${timeStr}` : typeStr;
 								doc.text(label, 10, 155);
 
-								const props = doc.getImageProperties(pair.after.dataUrl);
+								const props = doc.getImageProperties(pair.photo2.dataUrl);
 								const { w, h } = fitImage(props, 190, 110);
-								doc.addImage(pair.after.dataUrl, props.fileType, 10, 160, w, h, undefined, 'FAST');
+								doc.addImage(pair.photo2.dataUrl, props.fileType, 10, 160, w, h, undefined, 'FAST');
 							}
 						} else if (photoLayout === '6') {
 							doc.setFontSize(14);
@@ -411,24 +442,28 @@
 								doc.setFontSize(12);
 								doc.text(`${pair.locationName} - ${pair.angle}`, 10, rowY);
 
-								if (pair.before) {
+								if (pair.photo1) {
 									doc.setFontSize(10);
-									const label = showTimestampsOnPdf ? `Before - ${new Date(pair.before.timestamp).toLocaleString()}` : 'Before';
+									const typeStr = (pair.photo1.type || 'other').charAt(0).toUpperCase() + (pair.photo1.type || 'other').slice(1);
+									const timeStr = pair.photo1.timestamp ? new Date(pair.photo1.timestamp).toLocaleString() : 'Unknown';
+									const label = showTimestampsOnPdf ? `${typeStr} - ${timeStr}` : typeStr;
 									doc.text(label, 10, rowY + 6);
 
-									const props = doc.getImageProperties(pair.before.dataUrl);
+									const props = doc.getImageProperties(pair.photo1.dataUrl);
 									const { w, h } = fitImage(props, 90, 70);
-									doc.addImage(pair.before.dataUrl, props.fileType, 10, rowY + 8, w, h, undefined, 'FAST');
+									doc.addImage(pair.photo1.dataUrl, props.fileType, 10, rowY + 8, w, h, undefined, 'FAST');
 								}
 
-								if (pair.after) {
+								if (pair.photo2) {
 									doc.setFontSize(10);
-									const label = showTimestampsOnPdf ? `After - ${new Date(pair.after.timestamp).toLocaleString()}` : 'After';
+									const typeStr = (pair.photo2.type || 'other').charAt(0).toUpperCase() + (pair.photo2.type || 'other').slice(1);
+									const timeStr = pair.photo2.timestamp ? new Date(pair.photo2.timestamp).toLocaleString() : 'Unknown';
+									const label = showTimestampsOnPdf ? `${typeStr} - ${timeStr}` : typeStr;
 									doc.text(label, 110, rowY + 6);
 
-									const props = doc.getImageProperties(pair.after.dataUrl);
+									const props = doc.getImageProperties(pair.photo2.dataUrl);
 									const { w, h } = fitImage(props, 90, 70);
-									doc.addImage(pair.after.dataUrl, props.fileType, 110, rowY + 8, w, h, undefined, 'FAST');
+									doc.addImage(pair.photo2.dataUrl, props.fileType, 110, rowY + 8, w, h, undefined, 'FAST');
 								}
 							});
 						}
